@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yuanstar"
+version = "0.1.0"
+description = "Local YuanStar inventory review tool (Phase 0.1)"
+requires-python = ">=3.11"
+dependencies = [
+    "nicegui>=3.15,<4",
+    "pydantic>=2.13,<3",
+    "openpyxl>=3.1,<4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9,<10"]
+ocr = [
+    "rapidocr>=3.9,<4",
+    "onnxruntime>=1.28,<2",
+    "opencv-python>=5.0,<6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

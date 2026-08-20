@@ -1,0 +1,54 @@
+# Python and JavaScript tooling.
+.venv/
+node_modules/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.pytest_tmp/
+*.egg-info/
+
+# Local application state and recovery data.
+/workspace/
+/workspaces/
+/workspace.json
+/restore_points/
+/migration-backups/
+
+# Private screenshots and derived data: retain only guidance and empty placeholders.
+/samples_private/**
+!/samples_private/README.md
+!/samples_private/**/
+!/samples_private/**/.gitkeep
+
+# User-generated exports, OCR output, logs, and local caches.
+/exports/
+/output/
+/logs/
+/cache/
+/model_cache/
+/tmp/
+/temp/
+*.sqlite3
+*.db
+*.tmp
+*.log
+
+# Local configuration; an explicitly safe example may be tracked.
+.env
+.env.*
+!.env.example
+
+# Local Codex instructions and review evidence are never repository content.
+/prompts/
+/review/
+
+# Browser-local OCR generated and locally provisioned assets.
+/web/node_modules/
+/web/dist/
+/web/.tmp/
+/web/coverage/
+/web/public/models/*.onnx
+/web/public/models/ppocrv6_chars.txt
+/web/public/ort/ort-wasm-*
+/web/public/reference/

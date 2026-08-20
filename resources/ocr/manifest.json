@@ -1,0 +1,43 @@
+{
+  "assets": [
+    {
+      "filename": "PP-OCRv6_det_small.onnx",
+      "size": 9929594,
+      "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f",
+      "source": "RapidAI/RapidOCR ModelScope v3.9.2 onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx",
+      "sourceVersion": "RapidOCR 3.9.2",
+      "license": "Apache-2.0"
+    },
+    {
+      "filename": "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+      "size": 585532,
+      "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c",
+      "source": "RapidAI/RapidOCR ModelScope v3.9.2 onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+      "sourceVersion": "RapidOCR 3.9.2",
+      "license": "Apache-2.0"
+    },
+    {
+      "filename": "PP-OCRv6_rec_small.onnx",
+      "size": 21234383,
+      "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884",
+      "source": "RapidAI/RapidOCR ModelScope v3.9.2 onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx",
+      "sourceVersion": "RapidOCR 3.9.2",
+      "license": "Apache-2.0"
+    },
+    {
+      "filename": "ppocrv6_chars.txt",
+      "size": 93655,
+      "sha256": "769e7fa79bb297b5f18d8dbd149e364a45bc61f2b3f574e5ea836f0b261c23a6",
+      "source": "PP-OCRv6_rec_small.onnx metadata:character",
+      "sourceVersion": "RapidOCR 3.9.2",
+      "license": "Apache-2.0",
+      "derivation": {
+        "metadataKey": "character",
+        "encoding": "utf-8",
+        "newline": "CRLF",
+        "trailingNewline": true,
+        "rule": "CRLF.join(character.splitlines()) + CRLF"
+      }
+    }
+  ]
+}
