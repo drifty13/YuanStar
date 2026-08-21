@@ -1,21 +1,12 @@
 import { prepareRectVariants, recognizePreparedRectVariants } from "../ocr.js";
-import type { PageClassificationV1, PageType, Rect } from "./contracts.js";
+import type { Rect } from "./contracts.js";
 import { classifyPageVisual as classifyVisual, croppedGridTopCircleCount } from "./page-routing-visual.js";
 import type { ScreenshotProfile } from "./types.js";
-import { applyPageOverrides, routeTabOcrCandidates } from "./page-routing-logic.js";
+import { routeTabOcrCandidates, type PageRoutingEvidence } from "./page-routing-logic.js";
 
 export { croppedGridTopCircleCount };
-
-export interface PageRoutingEvidence {
-  pageType: PageType;
-  confidence: number;
-  evidence: string[];
-  selected: boolean;
-  tabOcrCandidates: Array<{ text: string; confidence: number; variant: string }>;
-  warning: string | null;
-  reviewRequired: boolean;
-  tabOcrMs: number;
-}
+export type { PageRoutingEvidence } from "./page-routing-logic.js";
+export { toPageClassificationV1 } from "./page-routing-logic.js";
 
 function tabRect(viewport: Rect): Rect {
   return {
@@ -65,20 +56,4 @@ export async function classifyPageWithTabOcr(bitmap: ImageBitmap, profile: Scree
       tabOcrMs: performance.now() - started,
     };
   }
-}
-
-export function toPageClassificationV1(routing: PageRoutingEvidence, confirmedPool?: { imageId: string; pageType: Exclude<PageType, "unknown"> }, expectedPageType?: PageType): PageClassificationV1 {
-  const auto: PageClassificationV1 = {
-    pageType: routing.pageType,
-    visualEvidence: routing.evidence.map((value) => ({
-      source: value.startsWith("selected_tab_visual:") ? "visual" as const : "tab_ocr" as const,
-      value,
-      confidence: routing.confidence,
-    })),
-    tabOcrEvidence: routing.tabOcrCandidates,
-    confidence: routing.confidence,
-    warning: routing.warning,
-    reviewRequired: routing.reviewRequired,
-  };
-  return applyPageOverrides(auto, confirmedPool, expectedPageType);
 }

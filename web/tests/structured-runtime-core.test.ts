@@ -3,7 +3,7 @@ import { classifyQualityPixels } from "../src/structured/quality-postprocess.js"
 import { applyHierarchicalNameSandwich, applyHierarchicalOrder, inferEquippedSandwiches, type EquippedRecognition } from "../src/structured/hierarchical-postprocess.js";
 import { transferBitmapOnSuccess } from "../src/structured/bitmap-lifecycle.js";
 import { classifyPageVisual, croppedGridTopCircleCount } from "../src/structured/page-routing-visual.js";
-import { applyPageOverrides, routeTabOcrCandidates } from "../src/structured/page-routing-logic.js";
+import { applyPageOverrides, routePage, routeTabOcrCandidates, toPageClassificationV1 } from "../src/structured/page-routing-logic.js";
 import type { CardCandidate, MainStarResult } from "../src/structured/types.js";
 import type { PageClassificationV1 } from "../src/structured/contracts.js";
 
@@ -29,6 +29,34 @@ const confirmedConflict = applyPageOverrides(basePage, { imageId: "image-a", pag
 equal(confirmedConflict.pageType, "main", "confirmed pool must remain authoritative");
 equal(confirmedConflict.warning, "confirmed_pool_conflict", "confirmed pool conflict must be visible");
 expect(confirmedConflict.reviewRequired, "confirmed pool conflict must require review");
+
+let visualRoutingCalls = 0;
+let tabOcrRoutingCalls = 0;
+const confirmedRoutingRun = await routePage("support", async () => {
+  visualRoutingCalls += 1;
+  tabOcrRoutingCalls += 1;
+  throw new Error("confirmed routing must not run automatic visual or tab OCR");
+});
+equal([visualRoutingCalls, tabOcrRoutingCalls], [0, 0], "confirmed formal OCR must skip visual routing and tab OCR");
+equal(confirmedRoutingRun.routing.tabOcrMs, 0, "confirmed formal OCR must report zero tab OCR time");
+equal(confirmedRoutingRun.routing.pageType, "support", "confirmed formal OCR must select the confirmed pool");
+equal(confirmedRoutingRun.routing.evidence, ["confirmed_pool:support"], "confirmed formal OCR must expose confirmed-pool evidence");
+equal([confirmedRoutingRun.routing.tabOcrCandidates, confirmedRoutingRun.routing.warning, confirmedRoutingRun.routing.reviewRequired], [[], null, false], "confirmed formal OCR must not invent tab evidence or classification review");
+for (const pageType of ["main", "support", "experience"] as const) {
+  const pipelineRoute = await routePage(pageType, async () => { throw new Error("confirmed pool must select its pipeline without automatic routing"); });
+  equal(pipelineRoute.routing.pageType, pageType, `confirmed ${pageType} pool must select its matching formal OCR pipeline`);
+}
+const confirmedClassification = toPageClassificationV1(confirmedRoutingRun.routing);
+equal(confirmedClassification.visualEvidence, [{ source: "confirmed_pool", value: "confirmed_pool:support", confidence: 1 }], "confirmed formal OCR classification must retain only confirmed-pool evidence");
+equal([confirmedClassification.tabOcrEvidence, confirmedClassification.warning, confirmedClassification.reviewRequired], [[], null, false], "confirmed formal OCR classification must have no tab OCR conflict or classification review");
+
+const automaticRoutingRun = await routePage(undefined, async () => {
+  visualRoutingCalls += 1;
+  tabOcrRoutingCalls += 1;
+  return { routing: { pageType: "main", confidence: 0.75, evidence: ["tab_ocr:主星"], selected: true, tabOcrCandidates: [], warning: null, reviewRequired: false, tabOcrMs: 3 }, visualRoutingMs: 2 };
+});
+equal([visualRoutingCalls, tabOcrRoutingCalls], [1, 1], "unconfirmed formal OCR must retain visual routing and tab OCR fallback");
+equal(automaticRoutingRun.routing.pageType, "main", "unconfirmed formal OCR must retain automatic routing result");
 
 for (const [quality, hue] of [["橙", 12], ["紫", 142], ["蓝", 106], ["绿", 61]] as const) {
   const result = classifyQualityPixels(Array.from({ length: 800 }, () => ({ hue, saturation: 200, value: 220 })));

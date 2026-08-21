@@ -4,6 +4,7 @@ import { buildBrowserImageAnalysis } from "./contract-builder.js";
 import { transferBitmapOnSuccess } from "./bitmap-lifecycle.js";
 import { createScreenshotProfile } from "./profiles.js";
 import { classifyPageVisual, classifyPageWithTabOcr, toPageClassificationV1, type PageRoutingEvidence } from "./page-routing.js";
+import { routePage } from "./page-routing-logic.js";
 import { runStructuredExperience } from "./experience-pipeline.js";
 import { runStructuredMain } from "./main-pipeline.js";
 import { runStructuredSupport } from "./support-pipeline.js";
@@ -111,7 +112,7 @@ export class BrowserVisionEngineRuntime implements BrowserVisionEngine {
     this.initialized = true;
   }
 
-  private async route(input: BrowserImageInput): Promise<RoutedImage> {
+  private async route(input: BrowserImageInput, confirmedPageType?: Exclude<PageType, "unknown">): Promise<RoutedImage> {
     this.assertInitialized();
     const routeStarted = performance.now();
     const decodeStarted = performance.now();
@@ -123,20 +124,23 @@ export class BrowserVisionEngineRuntime implements BrowserVisionEngine {
         const profileStarted = performance.now();
         const baseProfile = createScreenshotProfile(image);
         const profiledAt = performance.now();
-        const visualStarted = performance.now();
-        const visual = classifyPageVisual(image, baseProfile.viewport);
-        const visualFinished = performance.now();
-        const routing = await classifyPageWithTabOcr(bitmap, baseProfile, visual);
+        const pageRoute = await routePage(confirmedPageType, async () => {
+          const visualStarted = performance.now();
+          const visual = classifyPageVisual(image, baseProfile.viewport);
+          const visualFinished = performance.now();
+          const routing = await classifyPageWithTabOcr(bitmap, baseProfile, visual);
+          return { routing, visualRoutingMs: visualFinished - visualStarted };
+        });
         const finished = performance.now();
         return {
           bitmap,
           profile: baseProfile,
-          routing,
+          routing: pageRoute.routing,
           routeTimings: {
             decodeMs: decodedAt - decodeStarted,
             profileContentBoundsMs: profiledAt - profileStarted,
-            visualRoutingMs: visualFinished - visualStarted,
-            tabOcrMs: routing.tabOcrMs,
+            visualRoutingMs: pageRoute.visualRoutingMs,
+            tabOcrMs: pageRoute.routing.tabOcrMs,
             totalMs: finished - routeStarted,
           },
         };
@@ -160,10 +164,10 @@ export class BrowserVisionEngineRuntime implements BrowserVisionEngine {
   ): Promise<BrowserImageAnalysisV1> {
     const started = performance.now();
     const metricsBefore = getOcrRuntimeMetrics();
-    const routed = await this.route(input);
+    const confirmedPool = options?.confirmedPool?.imageId === input.imageId ? options.confirmedPool : undefined;
+    const routed = await this.route(input, confirmedPool?.pageType);
     try {
-      const confirmedPool = options?.confirmedPool?.imageId === input.imageId ? options.confirmedPool : undefined;
-      const pageClassification = toPageClassificationV1(routed.routing, confirmedPool, options?.expectedPageType);
+      const pageClassification = toPageClassificationV1(routed.routing, undefined, options?.expectedPageType);
       const inventoryRoi = inventoryHeaderRoi(routed.profile);
       const inventoryTokens = await recognizeInventoryTokens(routed.bitmap, inventoryRoi);
       const inventoryHeader = observeInventoryHeader(routed.profile, inventoryTokens.map((token) => ({

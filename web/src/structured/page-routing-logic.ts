@@ -1,5 +1,67 @@
 import type { ConfirmedImagePool, PageClassificationV1, PageType } from "./contracts.js";
 
+export interface PageRoutingEvidence {
+  pageType: PageType;
+  confidence: number;
+  evidence: string[];
+  selected: boolean;
+  tabOcrCandidates: Array<{ text: string; confidence: number; variant: string }>;
+  warning: string | null;
+  reviewRequired: boolean;
+  tabOcrMs: number;
+}
+
+export interface PageRoutingRun {
+  routing: PageRoutingEvidence;
+  visualRoutingMs: number;
+}
+
+export function confirmedPageRouting(pageType: Exclude<PageType, "unknown">): PageRoutingEvidence {
+  return {
+    pageType,
+    confidence: 1,
+    evidence: [`confirmed_pool:${pageType}`],
+    selected: true,
+    tabOcrCandidates: [],
+    warning: null,
+    reviewRequired: false,
+    tabOcrMs: 0,
+  };
+}
+
+export function routePage(
+  confirmedPageType: Exclude<PageType, "unknown"> | undefined,
+  routeAutomatically: () => Promise<PageRoutingRun>,
+): Promise<PageRoutingRun> {
+  return confirmedPageType
+    ? Promise.resolve({ routing: confirmedPageRouting(confirmedPageType), visualRoutingMs: 0 })
+    : routeAutomatically();
+}
+
+export function toPageClassificationV1(
+  routing: PageRoutingEvidence,
+  confirmedPool?: { imageId: string; pageType: Exclude<PageType, "unknown"> },
+  expectedPageType?: PageType,
+): PageClassificationV1 {
+  const auto: PageClassificationV1 = {
+    pageType: routing.pageType,
+    visualEvidence: routing.evidence.map((value) => ({
+      source: value.startsWith("confirmed_pool:")
+        ? "confirmed_pool" as const
+        : value.startsWith("selected_tab_visual:")
+          ? "visual" as const
+          : "tab_ocr" as const,
+      value,
+      confidence: routing.confidence,
+    })),
+    tabOcrEvidence: routing.tabOcrCandidates,
+    confidence: routing.confidence,
+    warning: routing.warning,
+    reviewRequired: routing.reviewRequired,
+  };
+  return applyPageOverrides(auto, confirmedPool, expectedPageType);
+}
+
 export const PAGE_TOKENS: Readonly<Record<Exclude<PageType, "unknown">, readonly string[]>> = {
   main: ["主星"],
   support: ["辅星"],
