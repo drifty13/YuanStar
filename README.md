@@ -1,19 +1,33 @@
-# YuanStar
+# YuanStar 星石整理
 
-YuanStar helps players organize *Ru Yuan / Code: Kite* star-stone inventory screenshots. The current product is a static browser application: screenshots, OCR inference, review, exports, and local data handling stay in the browser on the user's device.
+YuanStar 是一个给《如鸢 / 代号鸢》玩家使用的星石整理小工具。
 
-## What it does
+把背包截图导入网页后，YuanStar 会在浏览器本地完成主星、辅星和经验星曜的识别，再把需要确认的内容集中到人工核对页。确认完成后，就可以继续查看当前背包、调整计划等级，并计算对应的经验星曜需求。
 
-- Imports star-stone inventory screenshots for browser-local OCR.
-- Lets users review and correct recognized main stars, support stars, and experience stones.
-- Keeps account-scoped inventory data in the browser and supports local data import/export.
-- Provides filtering, inventory summaries, and experience-stone planning tools.
+## 目前可以做什么
 
-YuanStar does not upload screenshots to a YuanStar server or call a cloud OCR service. Browser extensions or the browser itself can still make their own requests outside the application.
+- 批量导入背包截图，并自动判断主星 / 辅星 / 经验星曜页面；
+- 识别星石名称、等级、品质和经验星曜数量；
+- 对不确定结果、重复截图和重叠内容进行人工核对；
+- 按账号保存当前背包，并支持本地数据导入 / 导出；
+- 查看当前背包与计划背包，快速设置计划等级；
+- 计算单颗星石和全部计划所需的经验星曜数量。
 
-## Run the browser product
+## 在线使用
 
-This repository declares `pnpm@11.19.0` in `web/package.json`. Use a compatible Node.js version (`^20.19.0` or `>=22.12.0`), then run:
+当前网页：
+
+`https://yuanstar.maayuan.com/`
+
+首次识别时需要加载浏览器本地 OCR 模型，可能需要稍等一会儿；模型缓存完成后，后续识别会明显更快。
+
+YuanStar 的截图识别和背包数据默认都在当前浏览器中处理和保存，不会上传到 YuanStar 服务器，也不会调用云端 OCR 服务。不同浏览器、不同设备之间不会自动同步数据，清理浏览器站点数据也会删除本地记录，因此重要数据建议定期导出备份。
+
+## 本地运行
+
+浏览器产品位于 `web/`。
+
+项目当前使用 `pnpm@11.19.0`，Node.js 版本要求为 `^20.19.0` 或 `>=22.12.0`。
 
 ```powershell
 Set-Location web
@@ -23,14 +37,29 @@ pnpm run build
 pnpm run preview -- --host 127.0.0.1 --port 4173
 ```
 
-Open `http://127.0.0.1:4173/`. The primary areas are import/recognition, manual review, and data management. The build prepares same-origin OCR model, ONNX Runtime WASM, and experience-rule assets; generated `dist/`, `node_modules/`, and staging directories are not source releases.
+然后打开：
 
-The Python code remains as a local reference implementation. Its optional OCR dependencies are declared in `pyproject.toml`; the browser product does not require a Python server.
+`http://127.0.0.1:4173/`
 
-## Third-party material and licensing
+正式 build 会自动准备 OCR 模型、ONNX Runtime Web WASM 和经验规则等运行时资源，不建议绕过项目脚本直接执行裸 `vite build`。
 
-Tracked OCR assets have provenance and hashes in `resources/ocr/manifest.json`. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the verified third-party information and outstanding provenance checks.
+## 仓库结构
 
-The YuanStar project license has not yet been selected. Until one is added, the repository is viewable but no general permission to copy, modify, or redistribute YuanStar's own code is granted.
+- `web/`：当前实际使用的浏览器产品；
+- `src/yuanstar/`：早期 Python 参考实现，保留用于规则和识别逻辑对照；
+- `resources/`：OCR 模型、参考数据及相关资源；
+- `docs/`：项目文档与阶段性说明。
 
-Author: Drifty Yan
+## 第三方组件与许可
+
+浏览器 OCR 使用 ONNX Runtime Web，以及基于 RapidOCR / PaddleOCR 模型体系的检测与识别资源。第三方资源的来源、哈希和许可说明见：
+
+- `resources/ocr/manifest.json`
+- `THIRD_PARTY_NOTICES.md`
+- `THIRD_PARTY_LICENSES/`
+
+YuanStar 自身代码目前尚未选择开源许可证。在正式加入许可证前，本仓库可公开查看，但不默认授予复制、修改或再分发 YuanStar 自有代码的许可。
+
+## 关于这个项目
+
+这是一个围绕真实游戏背包整理需求逐步做出来的个人项目，目前仍会继续迭代识别速度、兼容性和使用体验。如果你在使用时遇到识别异常，建议保留原始截图和具体页面类型，方便后续定位。
