@@ -1,6 +1,7 @@
 import * as ort from "onnxruntime-web/wasm";
 import type { ModelCompatibility, OcrBox, OcrLine, RawOcrResult, Timings } from "./types.js";
 import { createRuntimeCanvas, type RuntimeCanvas } from "./structured/image-canvas-runtime.js";
+import { runProgressiveVariantFallback } from "./structured/variant-fallback.js";
 
 let modelRoot = new URL("/models/", location.href);
 const MODEL_SPECS = [
@@ -402,6 +403,23 @@ export async function recognizePreparedRectVariants(
     results.push({ ...decoded, variant: item.variant });
   }
   return results;
+}
+
+/**
+ * Field-specific callers may accept a single safe color candidate. Otherwise
+ * the original contrast and Otsu candidates are recognized in full order.
+ */
+export async function recognizePreparedRectVariantsWithFallback(
+  variants: PreparedRoiVariant[],
+  canAcceptFirst: (candidate: { text: string; confidence: number; variant: string }) => boolean,
+  forceFullVariants = false,
+): Promise<Array<{ text: string; confidence: number; variant: string }>> {
+  return runProgressiveVariantFallback(
+    variants,
+    recognizePreparedRectVariants,
+    canAcceptFirst,
+    forceFullVariants,
+  );
 }
 
 export async function runLocalOcr(file: File): Promise<{ bitmap: ImageBitmap; result: RawOcrResult; timings: Timings }> {

@@ -1,4 +1,4 @@
-import { getOcrRuntimeMetrics, prepareRectVariants, recognizePreparedRectVariants } from "../ocr.js";
+import { getOcrRuntimeMetrics, prepareRectVariants, recognizePreparedRectVariantsWithFallback } from "../ocr.js";
 import { createOccurrenceId } from "../utils/id.js";
 import { buildCardCandidates, findCircleProposals } from "./main-grid.js";
 import { createScreenshotProfile } from "./profiles.js";
@@ -7,11 +7,21 @@ import { applyHierarchicalNameSandwich, applyHierarchicalOrder, recognizeEquippe
 import { recognizeQuality } from "./quality-postprocess.js";
 import type { OcrCandidate, StructuredMainOutput } from "./types.js";
 import { imageDataForBitmap } from "./image-canvas-runtime.js";
+import { canAcceptStrictLevelColorCandidate, canAcceptStrictNameColorCandidate } from "./variant-fallback.js";
 
 type NameResolver = (candidates: OcrCandidate[]) => NameResolution;
+type PreparedStructuredImage = {
+  bitmap: ImageBitmap;
+  imageData: ImageData;
+  profile: import("./types.js").ScreenshotProfile;
+};
 export interface StructuredStarOptions {
   imageId?: string;
   pageType?: "main" | "support";
+  /** Reuses routing-owned image state; this pipeline never closes that bitmap. */
+  prepared?: PreparedStructuredImage;
+  /** Shadow-audit reference mode: preserve the historical full-three recognition path. */
+  forceFullVariants?: boolean;
 }
 function round(value: number): number { return Math.round(value * 100) / 100; }
 
@@ -20,12 +30,14 @@ export async function runStructuredStar(file: File, resolveName: NameResolver, o
   const pageType = options.pageType ?? "main";
   const totalStart = performance.now();
   const decodeStart = performance.now();
-  const bitmap = await createImageBitmap(file);
+  const prepared = options.prepared;
+  const bitmap = prepared?.bitmap ?? await createImageBitmap(file);
+  const ownsBitmap = prepared == null;
   let ownershipTransferred = false;
   try {
   const decodedAt = performance.now();
-  const imageData = imageDataForBitmap(bitmap);
-  const profile = createScreenshotProfile(imageData);
+  const imageData = prepared?.imageData ?? imageDataForBitmap(bitmap);
+  const profile = prepared?.profile ?? createScreenshotProfile(imageData);
   const profiledAt = performance.now();
   const proposals = findCircleProposals(imageData, profile);
   const candidates = buildCardCandidates(proposals, profile);
@@ -57,10 +69,18 @@ export async function runStructuredStar(file: File, resolveName: NameResolver, o
     const preparedLevel = prepareRectVariants(bitmap, card.levelRect);
     roiCropMs += performance.now() - cropStart;
     const nameStart = performance.now();
-    const nameCandidates = await recognizePreparedRectVariants(preparedName);
+    const nameCandidates = await recognizePreparedRectVariantsWithFallback(
+      preparedName,
+      (candidate) => canAcceptStrictNameColorCandidate(candidate, resolveName),
+      options.forceFullVariants === true,
+    );
     nameRecognitionMs += performance.now() - nameStart;
     const levelStart = performance.now();
-    const levelCandidates = await recognizePreparedRectVariants(preparedLevel);
+    const levelCandidates = await recognizePreparedRectVariantsWithFallback(
+      preparedLevel,
+      canAcceptStrictLevelColorCandidate,
+      options.forceFullVariants === true,
+    );
     levelRecognitionMs += performance.now() - levelStart;
     const postStart = performance.now();
     const name = resolveName(nameCandidates);
@@ -99,7 +119,7 @@ export async function runStructuredStar(file: File, resolveName: NameResolver, o
     output: {
       profile, candidates, results: processedResults, equippedClassifierCalls: equipped.calls,
       timings: {
-        decodeMs: round(decodedAt - decodeStart), profileContentBoundsMs: round(profiledAt - decodedAt),
+        decodeMs: prepared ? 0 : round(decodedAt - decodeStart), profileContentBoundsMs: prepared ? 0 : round(profiledAt - decodedAt),
         gridCompletenessMs: round(griddedAt - profiledAt), roiCropMs: round(roiCropMs),
         nameRecognitionMs: round(nameRecognitionMs), levelRecognitionMs: round(levelRecognitionMs),
         postprocessMs: round(postprocessMs), totalMs: round(finished - totalStart), peakCandidateCount: proposals.length,
@@ -111,6 +131,6 @@ export async function runStructuredStar(file: File, resolveName: NameResolver, o
   ownershipTransferred = true;
   return result;
   } finally {
-    if (!ownershipTransferred) bitmap.close();
+    if (!ownershipTransferred && ownsBitmap) bitmap.close();
   }
 }

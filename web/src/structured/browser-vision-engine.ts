@@ -12,10 +12,14 @@ import type { ScreenshotProfile } from "./types.js";
 import { inventoryHeaderRoi, observeInventoryHeader } from "./inventory-header.js";
 import { createCardVisualEvidence } from "./overlap-visual-evidence.js";
 import { createRuntimeCanvas, imageDataForBitmap, type RuntimeCanvas } from "./image-canvas-runtime.js";
+import { attachOcrPerfImageDiagnostics, createLevelVariantAuditRecord, createNameVariantAuditRecord, variantsFromCandidateLengths } from "../ocr/performance-diagnostics.js";
+import { resolveName as resolveMainName } from "./main-postprocess.js";
+import { resolveSupportName } from "./support-postprocess.js";
 
 interface RoutedImage {
   bitmap: ImageBitmap;
   profile: ScreenshotProfile;
+  imageData: ImageData;
   routing: PageRoutingEvidence;
   routeTimings: {
     decodeMs: number;
@@ -121,7 +125,6 @@ export class BrowserVisionEngineRuntime implements BrowserVisionEngine {
       async (bitmap) => {
         const decodedAt = performance.now();
         const image = imageDataForBitmap(bitmap);
-        const profileStarted = performance.now();
         const baseProfile = createScreenshotProfile(image);
         const profiledAt = performance.now();
         const pageRoute = await routePage(confirmedPageType, async () => {
@@ -134,11 +137,12 @@ export class BrowserVisionEngineRuntime implements BrowserVisionEngine {
         const finished = performance.now();
         return {
           bitmap,
+          imageData: image,
           profile: baseProfile,
           routing: pageRoute.routing,
           routeTimings: {
             decodeMs: decodedAt - decodeStarted,
-            profileContentBoundsMs: profiledAt - profileStarted,
+            profileContentBoundsMs: profiledAt - decodedAt,
             visualRoutingMs: pageRoute.visualRoutingMs,
             tabOcrMs: pageRoute.routing.tabOcrMs,
             totalMs: finished - routeStarted,
@@ -160,7 +164,7 @@ export class BrowserVisionEngineRuntime implements BrowserVisionEngine {
 
   async analyzeImage(
     input: BrowserImageInput,
-    options?: { confirmedPool?: ConfirmedImagePool; expectedPageType?: PageType },
+    options?: { confirmedPool?: ConfirmedImagePool; expectedPageType?: PageType; variantAudit?: boolean },
   ): Promise<BrowserImageAnalysisV1> {
     const started = performance.now();
     const metricsBefore = getOcrRuntimeMetrics();
@@ -169,19 +173,25 @@ export class BrowserVisionEngineRuntime implements BrowserVisionEngine {
     try {
       const pageClassification = toPageClassificationV1(routed.routing, undefined, options?.expectedPageType);
       const inventoryRoi = inventoryHeaderRoi(routed.profile);
+      const inventoryStarted = performance.now();
       const inventoryTokens = await recognizeInventoryTokens(routed.bitmap, inventoryRoi);
+      const inventoryRecognitionMs = Math.round((performance.now() - inventoryStarted) * 100) / 100;
       const inventoryHeader = observeInventoryHeader(routed.profile, inventoryTokens.map((token) => ({
         text: token.rawText, confidence: token.confidence, rect: token.rect, variant: token.variant,
       })));
       if (pageClassification.pageType === "unknown") {
         const analysis = emptyAnalysis(input.imageId, routed.profile, pageClassification, routed.routing, routed.routeTimings);
         analysis.inventoryHeader = inventoryHeader;
-        return analysis;
+        return attachOcrPerfImageDiagnostics(analysis, {
+          fileName: input.file.name || input.imageId, inventoryRecognitionMs,
+          name: variantsFromCandidateLengths([]), level: variantsFromCandidateLengths([]), experienceCount: variantsFromCandidateLengths([]),
+        }, true);
       }
       const imagePageType = pageClassification.pageType;
       if (imagePageType === "experience") {
         const experience = await runStructuredExperience(input.file, {
           imageId: input.imageId,
+          prepared: { bitmap: routed.bitmap, imageData: routed.imageData, profile: routed.profile },
           pageEvidence: {
             selected: true,
             confidence: pageClassification.confidence,
@@ -192,30 +202,81 @@ export class BrowserVisionEngineRuntime implements BrowserVisionEngine {
         try {
           const analysis = buildBrowserImageAnalysis(input.imageId, pageClassification, experience.output, "experience");
           analysis.inventoryHeader = inventoryHeader;
+          analysis.timings.decodeMs = Math.round(routed.routeTimings.decodeMs * 100) / 100;
+          analysis.timings.profileContentBoundsMs = Math.round(routed.routeTimings.profileContentBoundsMs * 100) / 100;
           const metricsAfter = getOcrRuntimeMetrics();
           analysis.timings.ocrSessionCreationCount = metricsAfter.sessionCreationCount - metricsBefore.sessionCreationCount;
           analysis.timings.ocrRecognitionCallCount = metricsAfter.recognitionCallCount - metricsBefore.recognitionCallCount;
           analysis.timings.totalMs = Math.round((performance.now() - started) * 100) / 100;
-          return analysis;
+          return attachOcrPerfImageDiagnostics(analysis, {
+            fileName: input.file.name || input.imageId,
+            inventoryRecognitionMs,
+            name: variantsFromCandidateLengths([]),
+            level: variantsFromCandidateLengths([]),
+            experienceCount: variantsFromCandidateLengths(experience.output.results
+              .filter((result) => result.status !== "excluded_partial")
+              .map((result) => result.ocrCandidates.length)),
+            typeRecognitionMs: experience.output.timings.typeRecognitionMs,
+            quantityRecognitionMs: experience.output.timings.quantityRecognitionMs,
+          }, true);
         } finally {
-          experience.bitmap.close();
+          // The routed owner closes the shared bitmap below.
         }
       }
       const ordinary = imagePageType === "support"
-        ? await runStructuredSupport(input.file, { imageId: input.imageId })
-        : await runStructuredMain(input.file, { imageId: input.imageId });
+        ? await runStructuredSupport(input.file, { imageId: input.imageId, prepared: { bitmap: routed.bitmap, imageData: routed.imageData, profile: routed.profile }, forceFullVariants: options?.variantAudit === true })
+        : await runStructuredMain(input.file, { imageId: input.imageId, prepared: { bitmap: routed.bitmap, imageData: routed.imageData, profile: routed.profile }, forceFullVariants: options?.variantAudit === true });
       try {
         const analysis = buildBrowserImageAnalysis(input.imageId, pageClassification, ordinary.output, imagePageType);
         analysis.inventoryHeader = inventoryHeader;
         attachOverlapVisualEvidence(analysis, routed.bitmap);
         const metricsAfter = getOcrRuntimeMetrics();
+        analysis.timings.decodeMs = Math.round(routed.routeTimings.decodeMs * 100) / 100;
+        analysis.timings.profileContentBoundsMs = Math.round(routed.routeTimings.profileContentBoundsMs * 100) / 100;
         analysis.timings.ocrSessionCreationCount = metricsAfter.sessionCreationCount - metricsBefore.sessionCreationCount;
         analysis.timings.ocrRecognitionCallCount = metricsAfter.recognitionCallCount - metricsBefore.recognitionCallCount;
         analysis.timings.tabOcrMs = routed.routeTimings.tabOcrMs;
         analysis.timings.totalMs = Math.round((performance.now() - started) * 100) / 100;
-        return analysis;
+        const resolveName = imagePageType === "support" ? resolveSupportName : resolveMainName;
+        const variantAudit = options?.variantAudit ? {
+          name: ordinary.output.results.filter((result) => result.status !== "excluded_partial").map((result) => createNameVariantAuditRecord({
+            imageId: input.imageId,
+            fileName: input.file.name || input.imageId,
+            pageType: imagePageType,
+            row: result.rowIndex,
+            column: result.columnIndex,
+            cardId: result.cardId ?? result.instanceId,
+            candidates: result.ocrCandidates.name,
+            resolveName,
+            pipelineDirectName: result.directName ?? null,
+            pipelineEffectiveName: result.effectiveName ?? result.nameNormalized,
+          })),
+          level: ordinary.output.results.filter((result) => result.status !== "excluded_partial").map((result) => createLevelVariantAuditRecord({
+            imageId: input.imageId,
+            fileName: input.file.name || input.imageId,
+            pageType: imagePageType,
+            row: result.rowIndex,
+            column: result.columnIndex,
+            cardId: result.cardId ?? result.instanceId,
+            candidates: result.ocrCandidates.level,
+            pipelineDirectLevel: result.directLevel ?? null,
+            pipelineEffectiveLevel: result.effectiveLevel ?? result.level,
+          })),
+        } : undefined;
+        return attachOcrPerfImageDiagnostics(analysis, {
+          fileName: input.file.name || input.imageId,
+          inventoryRecognitionMs,
+          name: variantsFromCandidateLengths(ordinary.output.results
+            .filter((result) => result.status !== "excluded_partial")
+            .map((result) => result.ocrCandidates.name.length)),
+          level: variantsFromCandidateLengths(ordinary.output.results
+            .filter((result) => result.status !== "excluded_partial")
+            .map((result) => result.ocrCandidates.level.length)),
+          experienceCount: variantsFromCandidateLengths([]),
+          variantAudit,
+        }, true);
       } finally {
-        ordinary.bitmap.close();
+        // The routed owner closes the shared bitmap below.
       }
     } finally {
       routed.bitmap.close();

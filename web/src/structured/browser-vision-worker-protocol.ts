@@ -26,7 +26,7 @@ export interface BrowserVisionWorkerDiagnostics {
 export type BrowserVisionWorkerRequest =
   | { version: 1; requestId: string; operation: "initialize"; config: VisionAssetConfig }
   | { version: 1; requestId: string; operation: "classifyImage"; input: BrowserImageInput; options?: { confirmedPool?: ConfirmedImagePool } }
-  | { version: 1; requestId: string; operation: "analyzeImage"; input: BrowserImageInput; options?: { confirmedPool?: ConfirmedImagePool; expectedPageType?: PageType } }
+  | { version: 1; requestId: string; operation: "analyzeImage"; input: BrowserImageInput; options?: { confirmedPool?: ConfirmedImagePool; expectedPageType?: PageType; variantAudit?: boolean } }
   | { version: 1; requestId: string; operation: "dispose" };
 
 export type BrowserVisionWorkerSuccess = ModelManifest | PageClassificationV1 | BrowserImageAnalysisV1 | null;

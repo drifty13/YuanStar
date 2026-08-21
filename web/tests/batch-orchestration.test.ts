@@ -39,11 +39,11 @@ function analysis(imageId: string, ordinary = 1, experience = 0): BrowserImageAn
 class FakeEngine implements BrowserVisionEngine {
   initialized = 0;
   disposed = 0;
-  calls: Array<{ imageId: string; confirmedPool?: ConfirmedImagePool }> = [];
+  calls: Array<{ imageId: string; confirmedPool?: ConfirmedImagePool; variantAudit?: boolean }> = [];
   constructor(private readonly handler: (imageId: string) => Promise<BrowserImageAnalysisV1>) {}
   async initialize(_config: VisionAssetConfig): Promise<ModelManifest> { this.initialized += 1; return { schemaVersion: "1.0", models: [] }; }
   async classifyImage(_input: BrowserImageInput, _options?: { confirmedPool?: ConfirmedImagePool }): Promise<PageClassificationV1> { throw new Error("not used"); }
-  async analyzeImage(input: BrowserImageInput, options?: { confirmedPool?: ConfirmedImagePool }) { this.calls.push({ imageId: input.imageId, confirmedPool: options?.confirmedPool }); return this.handler(input.imageId); }
+  async analyzeImage(input: BrowserImageInput, options?: { confirmedPool?: ConfirmedImagePool; variantAudit?: boolean }) { this.calls.push({ imageId: input.imageId, confirmedPool: options?.confirmedPool, variantAudit: options?.variantAudit }); return this.handler(input.imageId); }
   async dispose() { this.disposed += 1; }
 }
 
@@ -63,6 +63,7 @@ equal(success.summary, { totalImages: 3, completedImages: 3, failedImages: 0, ca
 equal(successEngine.initialized, 1, "one batch must initialize an injected engine once");
 equal(successEngine.disposed, 0, "an injected engine must remain caller-owned");
 equal(successEngine.calls.map((call) => call.confirmedPool?.imageId), ["c", "b", "a"], "confirmed pools must stay isolated per input");
+expect(successEngine.calls.every((call) => call.variantAudit === undefined), "normal batches must not request audit reference mode");
 equal(events.map((event) => event.kind), ["task_started", "image_started", "image_classified", "image_completed", "image_started", "image_classified", "image_completed", "image_started", "image_classified", "image_completed", "task_completed"], "progress events must be ordered and complete");
 expect(events.every((event) => event.taskId === "task-1" && event.total === 3 && event.stage === event.kind), "all progress events must be pure task-scoped data");
 equal(success.images[0]?.analysis?.imageId, "c", "single-image contract must remain unmodified");
@@ -108,6 +109,10 @@ const owned = new FakeEngine(async (id) => analysis(id));
 await analyzeBrowserBatch(task(["owned"]), { createEngine: () => owned });
 equal(owned.initialized, 1, "internally created engine must initialize once");
 equal(owned.disposed, 1, "internally created engine must be disposed in finally");
+
+const auditEngine = new FakeEngine(async (id) => analysis(id));
+await analyzeBrowserBatch(task(["audit"]), { engine: auditEngine, variantAudit: true });
+equal(auditEngine.calls.map((call) => call.variantAudit), [true], "audit batches must propagate force-full mode to the image engine");
 
 equal(canApplyBatchResult({ result: success, currentAccountId: "account-1", currentRevision: 7, activeTaskId: "task-1" }), { action: "apply", reason: "ready" }, "current completed result may apply");
 equal(canApplyBatchResult({ result: success, currentAccountId: "account-1", currentRevision: 7, activeTaskId: "old-task" }).reason, "active_task_mismatch", "old task result must not apply");

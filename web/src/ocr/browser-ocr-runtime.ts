@@ -4,6 +4,7 @@ import {
 } from "../structured/batch-orchestration.js";
 import { BrowserVisionWorkerClient } from "../structured/browser-vision-worker-client.js";
 import type { BrowserVisionEngine, VisionAssetConfig } from "../structured/contracts.js";
+import { createOcrPerfReport, createOcrVariantAuditReport, emitOcrPerfReportIfEnabled, emitOcrVariantAuditReportIfEnabled, isOcrVariantAuditEnabled, isOcrVariantAuditRequested } from "./performance-diagnostics.js";
 import {
   progressFromBatch,
   type BrowserAnalysisResultV1,
@@ -182,6 +183,8 @@ export class BrowserOcrRuntime {
       }
       this.stateValue = "running";
       const startedAt = this.now();
+      const batchStartedAt = performance.now();
+      const variantAudit = isOcrVariantAuditRequested();
       const internalTask: BrowserBatchTaskV1 = {
         schemaVersion: "1.0",
         // These are an isolated batch-builder compatibility scope, never input
@@ -207,7 +210,12 @@ export class BrowserOcrRuntime {
           this.emit(options, progress);
         },
         now: () => new Date(startedAt),
+        variantAudit,
       });
+      if (run.batch.status !== "cancelled") {
+        emitOcrPerfReportIfEnabled(createOcrPerfReport(run.batch, performance.now() - batchStartedAt));
+        if (isOcrVariantAuditEnabled()) emitOcrVariantAuditReportIfEnabled(createOcrVariantAuditReport(run.batch));
+      }
       if (controller.signal.aborted || !this.isCurrent(active) || run.batch.status === "cancelled") {
         this.stateValue = "cancelling";
         emit("cancelling", run.batch.summary.completedImages);

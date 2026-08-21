@@ -1,4 +1,5 @@
 import type { BrowserImageAnalysisV1, BrowserImageInput, BrowserVisionEngine, ConfirmedImagePool, ModelManifest, PageClassificationV1, PageType, VisionAssetConfig } from "./contracts.js";
+import { attachOcrPerfImageDiagnostics, readOcrPerfImageDiagnostics } from "../ocr/performance-diagnostics.js";
 import type { BrowserVisionWorkerDiagnostics, BrowserVisionWorkerOperation, BrowserVisionWorkerRequest, BrowserVisionWorkerResponse, BrowserVisionWorkerSuccess } from "./browser-vision-worker-protocol.js";
 
 type ClientState = "idle" | "initializing" | "ready" | "disposed" | "failed";
@@ -7,7 +8,7 @@ type PendingRequest = { resolve: (value: BrowserVisionWorkerSuccess) => void; re
 type ClientRequest =
   | { operation: "initialize"; config: VisionAssetConfig }
   | { operation: "classifyImage"; input: BrowserImageInput; options?: { confirmedPool?: ConfirmedImagePool } }
-  | { operation: "analyzeImage"; input: BrowserImageInput; options?: { confirmedPool?: ConfirmedImagePool; expectedPageType?: PageType } }
+  | { operation: "analyzeImage"; input: BrowserImageInput; options?: { confirmedPool?: ConfirmedImagePool; expectedPageType?: PageType; variantAudit?: boolean } }
   | { operation: "dispose" };
 
 function defaultWorkerFactory(): Worker {
@@ -111,9 +112,11 @@ export class BrowserVisionWorkerClient implements BrowserVisionEngine {
     return this.request({ operation: "classifyImage", input, options }) as Promise<PageClassificationV1>;
   }
 
-  async analyzeImage(input: BrowserImageInput, options?: { confirmedPool?: ConfirmedImagePool; expectedPageType?: PageType }): Promise<BrowserImageAnalysisV1> {
+  async analyzeImage(input: BrowserImageInput, options?: { confirmedPool?: ConfirmedImagePool; expectedPageType?: PageType; variantAudit?: boolean }): Promise<BrowserImageAnalysisV1> {
     this.assertReady();
-    return this.request({ operation: "analyzeImage", input, options }) as Promise<BrowserImageAnalysisV1>;
+    const analysis = await this.request({ operation: "analyzeImage", input, options }) as BrowserImageAnalysisV1;
+    const diagnostics = readOcrPerfImageDiagnostics(analysis);
+    return diagnostics ? attachOcrPerfImageDiagnostics(analysis, diagnostics) : analysis;
   }
 
   async dispose(): Promise<void> {

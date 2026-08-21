@@ -233,6 +233,8 @@ export interface BrowserVisionEngine {
     options?: {
       confirmedPool?: ConfirmedImagePool;
       expectedPageType?: PageType;
+      /** Runtime-only diagnostics; never persisted or included in product data. */
+      variantAudit?: boolean;
     },
   ): Promise<BrowserImageAnalysisV1>;
   dispose(): Promise<void>;

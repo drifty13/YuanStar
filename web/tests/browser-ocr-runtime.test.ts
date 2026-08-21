@@ -1,5 +1,18 @@
 import { BrowserOcrRuntime } from "../src/ocr/browser-ocr-runtime.js";
 import type { BrowserOcrRuntimeJobV1 } from "../src/ocr/browser-analysis-contract.js";
+import {
+  attachOcrPerfImageDiagnostics,
+  createLevelVariantAuditRecord,
+  createNameVariantAuditRecord,
+  createOcrPerfReport,
+  createOcrVariantAuditReport,
+  emitOcrPerfReportIfEnabled,
+  emitOcrVariantAuditReportIfEnabled,
+  isOcrPerfDiagnosticsEnabled,
+  isOcrVariantAuditEnabled,
+  variantsFromCandidateLengths,
+} from "../src/ocr/performance-diagnostics.js";
+import { resolveName as resolveMainName } from "../src/structured/main-postprocess.js";
 import type {
   BrowserImageAnalysisV1,
   BrowserImageInput,
@@ -131,5 +144,99 @@ equal(next.status, "completed", "a new job must run after cancelled work is rele
 const failedRuntime = new BrowserOcrRuntime({ createEngine: () => new FakeEngine(async (imageId) => analysis(imageId), true) });
 const failed = await failedRuntime.run(job("init-failure"));
 equal(failed.error?.code, "engine_initialization_failed", "initialization failure must use a public runtime error code");
+
+equal(isOcrPerfDiagnosticsEnabled(""), false, "performance diagnostics must be disabled without the URL flag");
+equal(isOcrPerfDiagnosticsEnabled("?ocrPerf=1"), true, "performance diagnostics must be enabled by the URL flag");
+const perfAnalysis = analysis("perf-image");
+perfAnalysis.pageClassification.pageType = "experience";
+attachOcrPerfImageDiagnostics(perfAnalysis, {
+  fileName: "fixed-nine.png",
+  inventoryRecognitionMs: 9,
+  name: variantsFromCandidateLengths([]),
+  level: variantsFromCandidateLengths([]),
+  experienceCount: variantsFromCandidateLengths([3, 2]),
+  typeRecognitionMs: 4,
+  quantityRecognitionMs: 12,
+});
+const perfReport = createOcrPerfReport({
+  schemaVersion: "1.0", taskId: "perf", accountId: "internal", baseRevision: 0, status: "completed",
+  startedAt: "2026-08-13T00:00:00.000Z", finishedAt: "2026-08-13T00:00:01.000Z",
+  images: [{ sourceImageId: "perf-image", sourceOrder: 1, confirmedPool: { imageId: "perf-image", pageType: "experience" }, status: "completed", analysis: perfAnalysis, error: null }],
+  summary: { totalImages: 1, completedImages: 1, failedImages: 0, cancelledImages: 0, ordinaryOccurrenceCount: 0, experienceOccurrenceCount: 0, ocrSessionInitializationCount: 1, peakConcurrentAnalyses: 1, totalDurationMs: 1 },
+  warnings: [],
+}, 100);
+equal(perfReport.imageCount, 1, "performance reports must aggregate a completed image");
+equal(perfReport.timingTotals.inventoryRecognitionMs, 9, "inventory recognition timing must remain distinct");
+equal(perfReport.ocrCalls.experienceCountRecognitionCalls, 5, "experience variant calls must reflect the executed candidates");
+equal(perfReport.perImage[0]?.fileName, "fixed-nine.png", "performance reports must retain the local filename");
+equal(perfReport.timingsMayOverlap, true, "performance reports must disclose overlapping timing scopes");
+const emptyPerfReport = createOcrPerfReport({
+  schemaVersion: "1.0", taskId: "empty", accountId: "internal", baseRevision: 0, status: "completed",
+  startedAt: "2026-08-13T00:00:00.000Z", finishedAt: "2026-08-13T00:00:00.000Z", images: [],
+  summary: { totalImages: 0, completedImages: 0, failedImages: 0, cancelledImages: 0, ordinaryOccurrenceCount: 0, experienceOccurrenceCount: 0, ocrSessionInitializationCount: 0, peakConcurrentAnalyses: 0, totalDurationMs: 0 },
+  warnings: [],
+}, 0);
+equal(emptyPerfReport.imageCount, 0, "an empty batch must produce a safe performance report");
+equal(emptyPerfReport.timingPercentages.nameRecognitionMs, 0, "an empty batch must not divide by zero");
+const missingExperienceTimingReport = createOcrPerfReport({
+  schemaVersion: "1.0", taskId: "ordinary", accountId: "internal", baseRevision: 0, status: "completed",
+  startedAt: "2026-08-13T00:00:00.000Z", finishedAt: "2026-08-13T00:00:00.000Z",
+  images: [{ sourceImageId: "ordinary", sourceOrder: 1, confirmedPool: { imageId: "ordinary", pageType: "main" }, status: "completed", analysis: analysis("ordinary"), error: null }],
+  summary: { totalImages: 1, completedImages: 1, failedImages: 0, cancelledImages: 0, ordinaryOccurrenceCount: 4, experienceOccurrenceCount: 0, ocrSessionInitializationCount: 1, peakConcurrentAnalyses: 1, totalDurationMs: 1 },
+  warnings: [],
+}, 1);
+equal(missingExperienceTimingReport.timingTotals.quantityRecognitionMs, 0, "missing experience timing must remain safe for ordinary images");
+let perfLogGroups = 0;
+const perfOutput = { group: () => { perfLogGroups += 1; }, groupEnd: () => undefined, log: () => undefined, table: () => undefined };
+equal(emitOcrPerfReportIfEnabled(perfReport, "", perfOutput), false, "normal pages must not emit performance logs");
+equal(perfLogGroups, 0, "normal pages must leave the console untouched");
+equal(emitOcrPerfReportIfEnabled(perfReport, "?ocrPerf=1", perfOutput), true, "the URL flag must emit a performance report");
+equal(perfLogGroups, 1, "enabled diagnostics must emit one grouped report");
+
+equal(isOcrVariantAuditEnabled("?ocrPerf=1"), false, "variant audit must remain disabled without its dedicated flag");
+equal(isOcrVariantAuditEnabled("?ocrPerf=1&ocrVariantAudit=1"), true, "variant audit must require both URL flags");
+const nameAudit = createNameVariantAuditRecord({
+  imageId: "audit-image", fileName: "audit.png", pageType: "main", row: 0, column: 0, cardId: "card-1",
+  candidates: [{ variant: "color", text: "紫薇", confidence: 0.93 }, { variant: "contrast", text: "紫微", confidence: 0.91 }, { variant: "otsu", text: "天府", confidence: 0.99 }],
+  resolveName: resolveMainName,
+  pipelineDirectName: "天府",
+  pipelineEffectiveName: "天府",
+});
+equal(nameAudit.v1.normalized, "紫微", "one-variant name shadow resolver must use the first candidate only");
+equal(nameAudit.v12.normalized, "紫微", "two-variant name shadow resolver must preserve the first-two resolver result");
+equal(nameAudit.official.normalized, "天府", "all-three name shadow resolver must retain the official resolver result");
+equal(nameAudit.v3ChangesFinalDecision, true, "name mismatch must record a third-variant final-decision change");
+const levelAudit = createLevelVariantAuditRecord({
+  imageId: "audit-image", fileName: "audit.png", pageType: "main", row: 0, column: 0, cardId: "card-1",
+  candidates: [{ variant: "color", text: "4O", confidence: 0.32 }, { variant: "contrast", text: "40", confidence: 0.31 }, { variant: "otsu", text: "50", confidence: 0.99 }],
+  pipelineDirectLevel: 50,
+  pipelineEffectiveLevel: 50,
+});
+equal(levelAudit.v1.level, 40, "one-variant level shadow resolver must apply the existing parser only to v1");
+equal(levelAudit.v12.level, 40, "two-variant level shadow resolver must preserve existing weighted consensus");
+equal(levelAudit.official.level, 50, "all-three level shadow resolver must retain the official resolver result");
+equal(levelAudit.features.repair, true, "level audit must expose O-to-zero repair evidence");
+const auditAnalysis = analysis("audit-image");
+attachOcrPerfImageDiagnostics(auditAnalysis, {
+  fileName: "audit.png", inventoryRecognitionMs: 0,
+  name: variantsFromCandidateLengths([3]), level: variantsFromCandidateLengths([3]), experienceCount: variantsFromCandidateLengths([]),
+  variantAudit: { name: [nameAudit], level: [levelAudit] },
+});
+const auditReport = createOcrVariantAuditReport({
+  schemaVersion: "1.0", taskId: "audit", accountId: "internal", baseRevision: 0, status: "completed",
+  startedAt: "2026-08-13T00:00:00.000Z", finishedAt: "2026-08-13T00:00:01.000Z",
+  images: [{ sourceImageId: "audit-image", sourceOrder: 1, confirmedPool: { imageId: "audit-image", pageType: "main" }, status: "completed", analysis: auditAnalysis, error: null }],
+  summary: { totalImages: 1, completedImages: 1, failedImages: 0, cancelledImages: 0, ordinaryOccurrenceCount: 4, experienceOccurrenceCount: 0, ocrSessionInitializationCount: 1, peakConcurrentAnalyses: 1, totalDurationMs: 1 },
+  warnings: [],
+});
+equal(auditReport.name.v1Mismatches.length, 1, "name audit report must aggregate mismatches");
+equal(auditReport.level.v12Mismatches.length, 1, "level audit report must aggregate two-variant mismatches");
+equal(auditReport.estimatedStrategies.combined.allV1.fullRecognitionCalls, 6, "shadow audit estimates must account only for already-returned candidates");
+let variantAuditGroups = 0;
+const variantAuditOutput = { group: () => { variantAuditGroups += 1; }, groupEnd: () => undefined, log: () => undefined, table: () => undefined };
+equal(emitOcrVariantAuditReportIfEnabled(auditReport, "?ocrPerf=1", variantAuditOutput), false, "variant audit flag off must not touch the console");
+equal(variantAuditGroups, 0, "variant audit flag off must leave the console untouched");
+equal(emitOcrVariantAuditReportIfEnabled(auditReport, "?ocrPerf=1&ocrVariantAudit=1", variantAuditOutput), true, "variant audit flag must emit JSON audit output");
+equal(variantAuditGroups, 1, "variant audit flag on must emit one grouped report");
 
 console.log("browser OCR runtime checks passed");

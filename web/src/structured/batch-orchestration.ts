@@ -181,6 +181,8 @@ export interface BrowserBatchRunOptions {
   onProgress?: (event: BrowserBatchProgressEventV1) => void;
   now?: () => Date;
   nowMs?: () => number;
+  /** Enables runtime-only candidate shadow audit; it does not alter OCR execution. */
+  variantAudit?: boolean;
 }
 
 export interface BatchApplyDecision {
@@ -562,7 +564,7 @@ export async function analyzeBrowserBatch(
       const image = images[index]!;
       emit("image_started", image, results.length);
       try {
-        const analysis = await engine.analyzeImage(image.input, { confirmedPool: image.confirmedPool });
+        const analysis = await engine.analyzeImage(image.input, { confirmedPool: image.confirmedPool, variantAudit: options.variantAudit });
         emit("image_classified", image, results.length);
         results.push({ sourceImageId: image.sourceImageId, sourceOrder: image.sourceOrder, confirmedPool: image.confirmedPool ?? null, status: "completed", analysis, error: null });
         emit("image_completed", image, results.length);

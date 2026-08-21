@@ -8,6 +8,12 @@ import { imageDataForBitmap } from "./image-canvas-runtime.js";
 
 export interface StructuredExperienceOptions {
   imageId?: string;
+  /** Reuses routing-owned image state; this pipeline never closes that bitmap. */
+  prepared?: {
+    bitmap: ImageBitmap;
+    imageData: ImageData;
+    profile: import("./types.js").ScreenshotProfile;
+  };
   pageEvidence?: { selected: boolean; confidence: number; evidence: string[] };
   tabOcrMs?: number;
 }
@@ -18,12 +24,14 @@ export async function runStructuredExperience(file: File, options: StructuredExp
   const imageId = options.imageId ?? file.name;
   const totalStart = performance.now();
   const decodeStart = performance.now();
-  const bitmap = await createImageBitmap(file);
+  const prepared = options.prepared;
+  const bitmap = prepared?.bitmap ?? await createImageBitmap(file);
+  const ownsBitmap = prepared == null;
   let ownershipTransferred = false;
   try {
   const decodedAt = performance.now();
-  const imageData = imageDataForBitmap(bitmap);
-  const baseProfile = createScreenshotProfile(imageData);
+  const imageData = prepared?.imageData ?? imageDataForBitmap(bitmap);
+  const baseProfile = prepared?.profile ?? createScreenshotProfile(imageData);
   const pageEvidence = options.pageEvidence ?? selectedExperienceTabEvidence(imageData, baseProfile.viewport);
   const profiledAt = performance.now();
   const geometry = findExperienceCircles(imageData, baseProfile, pageEvidence.selected);
@@ -93,8 +101,8 @@ export async function runStructuredExperience(file: File, options: StructuredExp
       results,
       aggregate,
       timings: {
-        decodeMs: round(decodedAt - decodeStart),
-        profileContentBoundsMs: round(profiledAt - decodedAt),
+        decodeMs: prepared ? 0 : round(decodedAt - decodeStart),
+        profileContentBoundsMs: prepared ? 0 : round(profiledAt - decodedAt),
         geometryCompletenessMs: round(geometrizedAt - profiledAt),
         roiCropMs: round(roiCropMs),
         typeRecognitionMs: round(typeRecognitionMs),
@@ -109,6 +117,6 @@ export async function runStructuredExperience(file: File, options: StructuredExp
   ownershipTransferred = true;
   return result;
   } finally {
-    if (!ownershipTransferred) bitmap.close();
+    if (!ownershipTransferred && ownsBitmap) bitmap.close();
   }
 }
