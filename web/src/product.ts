@@ -549,7 +549,7 @@ function restoreScroll(values: Record<Pane, number>): void {
   if (plan) plan.scrollTop = values.plan;
 }
 
-type ReviewScrollIntent = "keep" | "top" | { pane: Pane; sourceScroll: number; relativeTop: number };
+type ReviewScrollIntent = "keep" | "top" | { pane: Pane; sourceScroll: number; relativeTop: number } | { starInstanceId: string; targetVisualRow: number };
 
 type ReviewViewportSnapshot = { pageScrollY: number; reviewScrollTop: number; anchorOccurrenceId: string | null; anchorTop: number | null };
 
@@ -583,7 +583,10 @@ function renderReview(intent: ReviewScrollIntent = "keep", viewport: ReviewViewp
   restoreScroll(scroll);
   bindReviewControls();
   if (intent === "top") requestAnimationFrame(scrollSelectedRowsToTop);
-  if (typeof intent === "object") requestAnimationFrame(() => alignCounterpartRow(intent));
+  if (typeof intent === "object") requestAnimationFrame(() => {
+    if ("starInstanceId" in intent) scrollStarRowsToVisualRow(intent);
+    else alignCounterpartRow(intent);
+  });
   if (intent === "keep") requestAnimationFrame(() => restoreReviewViewport(viewport));
 }
 
@@ -731,7 +734,7 @@ function selectStar(id: string, pane: Pane): void {
   renderReview({ pane, sourceScroll, relativeTop });
 }
 
-function alignCounterpartRow(intent: Exclude<ReviewScrollIntent, "keep" | "top">): void {
+function alignCounterpartRow(intent: Extract<ReviewScrollIntent, { pane: Pane }>): void {
   const source = root.querySelector<HTMLElement>(`#${intent.pane}-scroll`);
   const counterpartPane: Pane = intent.pane === "current" ? "plan" : "current";
   const counterpart = root.querySelector<HTMLElement>(`[data-star-id="${selectedId}"][data-pane="${counterpartPane}"]`);
@@ -745,6 +748,21 @@ function scrollSelectedRowsToTop(): void {
     const container = root.querySelector<HTMLElement>(`#${pane}-scroll`);
     const row = root.querySelector<HTMLElement>(`[data-star-id="${selectedId}"][data-pane="${pane}"]`);
     if (container && row) container.scrollTop = Math.max(0, row.offsetTop - 29);
+  });
+}
+
+/** Re-find a persisted instance after sorting and place it at the requested data-row position in both panes. */
+function scrollStarRowsToVisualRow(intent: Extract<ReviewScrollIntent, { starInstanceId: string }>): void {
+  selectedId = intent.starInstanceId;
+  (["current", "plan"] as Pane[]).forEach((pane) => {
+    const container = root.querySelector<HTMLElement>(`#${pane}-scroll`);
+    const row = root.querySelector<HTMLTableRowElement>(`[data-star-id="${intent.starInstanceId}"][data-pane="${pane}"]`);
+    if (!container || !row) return;
+    const rowHeight = row.getBoundingClientRect().height;
+    const headerHeight = row.closest("table")?.querySelector("thead")?.getBoundingClientRect().height ?? 0;
+    if (rowHeight <= 0) return;
+    const requested = row.offsetTop - headerHeight - ((intent.targetVisualRow - 1) * rowHeight);
+    container.scrollTop = Math.min(Math.max(0, requested), Math.max(0, container.scrollHeight - container.clientHeight));
   });
 }
 
@@ -941,7 +959,8 @@ function commitCurrentEditor(): void {
   const update = buildCurrentInstanceUpdate(selected, draft, isOcrBackedStar(selected));
   if (!hasCurrentInstanceUpdate(update)) { renderReview(); return; }
   activatePane("current");
-  void runWorkspaceMutation((session) => session.updateInstance(selected.starInstanceId, update));
+  const starInstanceId = selected.starInstanceId;
+  void runWorkspaceMutation((session) => session.updateInstance(starInstanceId, update), () => { selectedId = starInstanceId; }, { intent: { starInstanceId, targetVisualRow: 5 } });
 }
 
 function commitPlanEditor(): void {
