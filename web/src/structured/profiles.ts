@@ -9,26 +9,36 @@ interface LayoutProfileSpec {
   gridRegion: readonly [number, number, number, number];
   rowSpacingRange: readonly [number, number];
   bottomSafeY: number;
+  radiusRatio: number;
+  horizontalSearchRatio: number;
 }
 
 export const PHONE_PROFILE: LayoutProfileSpec = {
   profileId: "phone_portrait_v1", deviceKind: "phone", ratioMin: 0.39, ratioMax: 0.50,
   columnCenters: [0.165, 0.380, 0.597, 0.812], gridRegion: [0.05, 0.18, 0.90, 0.94],
-  rowSpacingRange: [0.075, 0.135], bottomSafeY: 0.89,
+  rowSpacingRange: [0.075, 0.135], bottomSafeY: 0.89, radiusRatio: 0.088, horizontalSearchRatio: 0,
+};
+export const PHONE_9_16_PROFILE: LayoutProfileSpec = {
+  // Observed only in the 9:16 phone UI samples. Keep this narrow so normal tablets
+  // remain on their established geometry family.
+  profileId: "phone_9_16_v1", deviceKind: "phone", ratioMin: 0.50, ratioMax: 0.57,
+  columnCenters: [0.165, 0.380, 0.597, 0.812], gridRegion: [0.05, 0.18, 0.90, 0.94],
+  rowSpacingRange: [0.075, 0.135], bottomSafeY: 0.89, radiusRatio: 0.079, horizontalSearchRatio: 0,
 };
 export const TABLET_PROFILE: LayoutProfileSpec = {
-  profileId: "tablet_portrait_v1", deviceKind: "tablet", ratioMin: 0.50, ratioMax: 0.78,
+  profileId: "tablet_portrait_v1", deviceKind: "tablet", ratioMin: 0.57, ratioMax: 0.78,
   columnCenters: [0.165, 0.380, 0.597, 0.812], gridRegion: [0.05, 0.18, 0.90, 0.94],
-  rowSpacingRange: [0.075, 0.145], bottomSafeY: 0.89,
+  rowSpacingRange: [0.075, 0.145], bottomSafeY: 0.89, radiusRatio: 0.068, horizontalSearchRatio: 0.09,
 };
 export const FALLBACK_PROFILE: LayoutProfileSpec = {
   profileId: "unknown_portrait_fallback", deviceKind: "unknown", ratioMin: 0.25, ratioMax: 0.90,
   columnCenters: [0.165, 0.380, 0.597, 0.812], gridRegion: [0.05, 0.18, 0.90, 0.94],
-  rowSpacingRange: [0.070, 0.150], bottomSafeY: 0.87,
+  rowSpacingRange: [0.070, 0.150], bottomSafeY: 0.87, radiusRatio: 0.078, horizontalSearchRatio: 0.09,
 };
 
 export function layoutSpec(profileId: ScreenshotProfile["profileId"]): LayoutProfileSpec {
   return profileId === PHONE_PROFILE.profileId ? PHONE_PROFILE
+    : profileId === PHONE_9_16_PROFILE.profileId ? PHONE_9_16_PROFILE
     : profileId === TABLET_PROFILE.profileId ? TABLET_PROFILE : FALLBACK_PROFILE;
 }
 
@@ -79,6 +89,7 @@ export function createScreenshotProfile(image: ImageData): ScreenshotProfile {
   const detected = detectViewport(image);
   const ratio = detected.viewport.width / Math.max(1, detected.viewport.height);
   const spec = ratio >= PHONE_PROFILE.ratioMin && ratio < PHONE_PROFILE.ratioMax ? PHONE_PROFILE
+    : ratio >= PHONE_9_16_PROFILE.ratioMin && ratio < PHONE_9_16_PROFILE.ratioMax ? PHONE_9_16_PROFILE
     : ratio >= TABLET_PROFILE.ratioMin && ratio < TABLET_PROFILE.ratioMax ? TABLET_PROFILE : FALLBACK_PROFILE;
   const contentTop = detected.viewport.y + Math.round(detected.viewport.height * spec.gridRegion[1]);
   const contentBottom = detected.viewport.y + Math.round(detected.viewport.height * spec.bottomSafeY);

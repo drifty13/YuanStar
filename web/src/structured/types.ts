@@ -6,7 +6,7 @@ export interface Rect {
 }
 
 export interface ScreenshotProfile {
-  profileId: "phone_portrait_v1" | "tablet_portrait_v1" | "unknown_portrait_fallback";
+  profileId: "phone_portrait_v1" | "phone_9_16_v1" | "tablet_portrait_v1" | "unknown_portrait_fallback";
   deviceKind: "phone" | "tablet" | "unknown";
   imageWidth: number;
   imageHeight: number;

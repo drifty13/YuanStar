@@ -1,7 +1,7 @@
 import { candidateFromCircle, classifyCompleteness, isInside } from "../src/structured/card-completeness.js";
 import { buildCardCandidates } from "../src/structured/main-grid.js";
 import { classifyResultStatus, cleanName, parseLevel, resolveLevel, resolveName } from "../src/structured/main-postprocess.js";
-import { createScreenshotProfile } from "../src/structured/profiles.js";
+import { createScreenshotProfile, layoutSpec } from "../src/structured/profiles.js";
 import type { CircleProposal, OcrCandidate, ScreenshotProfile } from "../src/structured/types.js";
 
 function expect(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message); }
@@ -30,6 +30,25 @@ for (let y = 0; y < 200; y += 1) for (let x = 0; x < 140; x += 1) {
 const scaled = createScreenshotProfile({ data: pixels, width: 140, height: 200, colorSpace: "srgb" } as ImageData);
 equal(scaled.viewport, { x: 15, y: 0, width: 110, height: 200 }, "viewport should remove continuous black bars");
 equal(scaled.contentBounds, { x: 15, y: 36, width: 110, height: 142 }, "content bounds should scale from the selected profile");
+
+function screenshotForProfile(width: number, height: number): ImageData {
+  const data = new Uint8ClampedArray(width * height * 4);
+  data.fill(40);
+  return { data, width, height, colorSpace: "srgb" } as ImageData;
+}
+const phone916UpperEdge = createScreenshotProfile(screenshotForProfile(569, 1000));
+expect(phone916UpperEdge.profileId === "phone_9_16_v1", "ratio 0.569 should remain in the 9:16 phone geometry family");
+const tabletLowerEdge = createScreenshotProfile(screenshotForProfile(570, 1000));
+expect(tabletLowerEdge.profileId === "tablet_portrait_v1", "ratio 0.570 should enter the tablet geometry family");
+// 900×1600 is the strict 9:16 MuMu-native phone viewport.
+const phone916 = createScreenshotProfile(screenshotForProfile(900, 1600));
+expect(phone916.profileId === "phone_9_16_v1" && phone916.deviceKind === "phone", "strict 9:16 phone viewport should use its own geometry family");
+expect(layoutSpec(phone916.profileId).radiusRatio === .079 && layoutSpec(phone916.profileId).horizontalSearchRatio === 0, "9:16 phone geometry should use observed radius and fixed columns");
+// Matches the accepted tablet viewport ratio 1747 / 2816 ≈ 0.6204.
+const unchangedTablet = createScreenshotProfile(screenshotForProfile(620, 1000));
+expect(unchangedTablet.profileId === "tablet_portrait_v1" && layoutSpec(unchangedTablet.profileId).radiusRatio === .068, "existing tablet geometry must remain unchanged");
+const unchangedPhone = createScreenshotProfile(screenshotForProfile(440, 1000));
+expect(unchangedPhone.profileId === "phone_portrait_v1" && layoutSpec(unchangedPhone.profileId).radiusRatio === .088, "existing phone geometry must remain unchanged");
 
 // 四列与末行 1/2/3 张完整卡。
 for (const tailCount of [1, 2, 3]) {

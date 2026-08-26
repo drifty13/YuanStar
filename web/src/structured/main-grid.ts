@@ -54,13 +54,11 @@ function suppressColumn(peaks: CircleProposal[]): CircleProposal[] {
 export function findCircleProposals(image: ImageData, profile: ScreenshotProfile): CircleProposal[] {
   const spec = layoutSpec(profile.profileId);
   const edges = edgeMap(image);
-  const radiusRatio = profile.profileId === "phone_portrait_v1" ? 0.088
-    : profile.profileId === "tablet_portrait_v1" ? 0.068 : 0.078;
-  const expectedRadius = profile.viewport.width * radiusRatio;
+  const expectedRadius = profile.viewport.width * spec.radiusRatio;
   const minRadius = Math.max(12, Math.round(expectedRadius * 0.82));
   const maxRadius = Math.max(minRadius + 2, Math.round(expectedRadius * 1.18));
   const radiusStep = Math.max(3, Math.round(expectedRadius * 0.055));
-  const xSearch = Math.round(profile.viewport.width * (profile.profileId === "phone_portrait_v1" ? 0 : 0.09));
+  const xSearch = Math.round(profile.viewport.width * spec.horizontalSearchRatio);
   const xStep = Math.max(4, Math.round(expectedRadius * 0.12));
   const yStep = Math.max(2, Math.round(profile.viewport.height / 900));
   const proposals: CircleProposal[] = [];
@@ -105,7 +103,7 @@ export function groupGridRows(proposals: CircleProposal[], profile: ScreenshotPr
     row.y = median([...row.circles.values()].map((item) => item.centerY));
   }
   const rowScore = (row: GridRow): number => [...row.circles.values()].reduce((sum, item) => sum + item.score, 0) / Math.max(1, row.circles.size);
-  const expectedRowRadius = profile.viewport.width * (profile.profileId === "phone_portrait_v1" ? 0.088 : profile.profileId === "tablet_portrait_v1" ? 0.068 : 0.078);
+  const expectedRowRadius = profile.viewport.width * spec.radiusRatio;
   const radiusEligible = rows.filter((row) => Math.abs(median([...row.circles.values()].map((item) => item.radius)) - expectedRowRadius) <= expectedRowRadius * 0.15);
   const populated = (radiusEligible.filter((row) => row.circles.size >= 2).length >= 2 ? radiusEligible : rows).filter((row) => row.circles.size >= 2);
   const bestRowScore = Math.max(...populated.map(rowScore), 0);
