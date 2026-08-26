@@ -72,7 +72,10 @@ let selectedPane: Pane = "current";
 let kindFilter = "全部";
 let qualityFilter = "全部";
 let nameFilter = "";
-let sortFilter = "catalog";
+type ReviewSortFilter = "catalog" | "name" | "level" | "target";
+let sortFilter: ReviewSortFilter = "catalog";
+let preFilterSortFilter: ReviewSortFilter | null = null;
+let reviewFilterWasActive = false;
 let reviewIsComposing = false;
 let ocrListExpanded = false;
 let workspaceContext: ProductWorkspaceContext | null = null;
@@ -251,6 +254,19 @@ const kindPriority: Record<Star["kind"], number> = { 主星: 0, 辅星: 1 };
 
 function nameSearchTerms(): string[] { return nameFilter.split(/[\s,，、;；]+/).map((term) => term.trim()).filter(Boolean); }
 function hasActiveReviewFilter(): boolean { return kindFilter !== "全部" || qualityFilter !== "全部" || nameSearchTerms().length > 0; }
+function syncReviewFilterSort(): void {
+  const hasActiveFilter = hasActiveReviewFilter();
+  if (!reviewFilterWasActive && hasActiveFilter) {
+    preFilterSortFilter = sortFilter;
+    sortFilter = "name";
+  } else if (reviewFilterWasActive && hasActiveFilter) {
+    sortFilter = "name";
+  } else if (reviewFilterWasActive && !hasActiveFilter) {
+    sortFilter = preFilterSortFilter ?? sortFilter;
+    preFilterSortFilter = null;
+  }
+  reviewFilterWasActive = hasActiveFilter;
+}
 
 function filteredStars(): Star[] {
   const terms = nameSearchTerms();
@@ -263,7 +279,7 @@ function filteredStars(): Star[] {
     const stable = a.starInstanceId.localeCompare(b.starInstanceId);
     if (sortFilter === "level") return (b.level - a.level) || (qualityPriority[a.quality] - qualityPriority[b.quality]) || catalogDelta || stable;
     if (sortFilter === "target") return (b.targetLevel - a.targetLevel) || (qualityPriority[a.quality] - qualityPriority[b.quality]) || catalogDelta || stable;
-    const directoryOrder = hasActiveReviewFilter()
+    const directoryOrder = sortFilter === "name"
       ? catalogDelta || (b.level - a.level)
       : (b.level - a.level) || catalogDelta;
     return (kindPriority[a.kind] - kindPriority[b.kind]) || directoryOrder || (qualityPriority[a.quality] - qualityPriority[b.quality]) || stable;
@@ -301,7 +317,7 @@ function restoreReasonLabel(reason: string): string {
   return ({ pre_ocr_rebuild: "识别前自动恢复点", import_data_safety: "导入前自动恢复点", restore_safety: "恢复前自动安全点", "导入数据前安全恢复点": "导入前自动恢复点", "手动恢复前安全点": "恢复前自动安全点" } as Record<string, string>)[reason] ?? reason;
 }
 
-function inventoryGroupKey(star: Star): string { return hasActiveReviewFilter() ? `${star.kind}|${star.name}` : `${star.kind}|${star.level}|${star.name}|${star.quality}`; }
+function inventoryGroupKey(star: Star): string { return sortFilter === "name" ? `${star.kind}|${star.name}` : `${star.kind}|${star.level}|${star.name}|${star.quality}`; }
 function starDescription(name: string): string | null { return browserCatalog.entry(name)?.description ?? null; }
 function html(value: string): string { return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;"); }
 function nameOptions(kind: Star["kind"], selected: string): string {
@@ -453,7 +469,7 @@ function reviewTemplate(): string {
         <label>大类<select id="kind-filter"><option>全部</option><option>主星</option><option>辅星</option></select></label>
         <label>品质<select id="quality-filter"><option>全部</option><option>橙</option><option>紫</option><option>蓝</option><option>绿</option><option>白</option></select></label>
         <label class="filter-search">标准名称搜索<input id="name-filter" type="search" placeholder="可用空格或逗号分隔" value="${nameFilter}" /></label>
-        <label>排序<select id="sort-filter"><option value="catalog">目录顺序</option><option value="level">当前等级</option><option value="target">计划等级</option></select></label>
+        <label>排序<select id="sort-filter"><option value="catalog">默认综合</option><option value="name">名称排序</option><option value="level">当前等级</option><option value="target">计划等级</option></select></label>
         <button class="button button-secondary" id="apply-filter" type="button">应用筛选</button><button class="button button-tertiary danger-action" id="clear-filter" type="button">清除筛选</button>
       </div>
       <dl class="inventory-facts"><div><dt>游戏版本</dt><dd>${workspaceContext.record.snapshot.gameVersion}</dd></div><div><dt>账号名称</dt><dd>${html(workspaceContext.account.displayName)}</dd></div><div><dt>当前汇总</dt><dd>${total}颗</dd></div><div class="editable-fact"><dt>背包数量</dt><dd><input id="bag-quantity" type="number" min="0" value="${bagQuantity ?? ""}" aria-label="背包数量" /></dd></div><div class="editable-fact"><dt>背包容量</dt><dd><input id="bag-capacity" type="number" min="0" value="${bagCapacity ?? ""}" aria-label="背包容量" /></dd></div><div><dt>保存状态</dt><dd class="save-state ${reviewSaveState === "failed" ? "warning-value" : ""}">${saveStateLabel()}</dd></div></dl>
@@ -1064,17 +1080,23 @@ function bindReviewControls(): void {
   const quality = root.querySelector<HTMLSelectElement>("#quality-filter");
   const name = root.querySelector<HTMLInputElement>("#name-filter");
   const sort = root.querySelector<HTMLSelectElement>("#sort-filter");
-  if (kind) { kind.value = kindFilter; kind.addEventListener("change", () => { kindFilter = kind.value; refreshReviewTables(); }); }
-  if (quality) { quality.value = qualityFilter; quality.addEventListener("change", () => { qualityFilter = quality.value; refreshReviewTables(); }); }
+  const refreshAfterFilterChange = () => {
+    syncReviewFilterSort();
+    if (sort) sort.value = sortFilter;
+    refreshReviewTables();
+  };
+  if (kind) { kind.value = kindFilter; kind.addEventListener("change", () => { kindFilter = kind.value; refreshAfterFilterChange(); }); }
+  if (quality) { quality.value = qualityFilter; quality.addEventListener("change", () => { qualityFilter = quality.value; refreshAfterFilterChange(); }); }
   if (name) {
     name.addEventListener("compositionstart", () => { reviewIsComposing = true; });
-    name.addEventListener("input", () => { nameFilter = name.value; if (!reviewIsComposing) refreshReviewTables(); });
-    name.addEventListener("compositionend", () => { reviewIsComposing = false; nameFilter = name.value; refreshReviewTables(); });
+    name.addEventListener("input", () => { nameFilter = name.value; if (!reviewIsComposing) refreshAfterFilterChange(); });
+    name.addEventListener("compositionend", () => { reviewIsComposing = false; nameFilter = name.value; refreshAfterFilterChange(); });
   }
-  if (sort) { sort.value = sortFilter; sort.addEventListener("change", () => { sortFilter = sort.value; refreshReviewTables(); }); }
+  if (sort) { sort.value = sortFilter; sort.addEventListener("change", () => { sortFilter = sort.value as ReviewSortFilter; refreshReviewTables(); }); }
   root.querySelector("#apply-filter")?.addEventListener("click", () => refreshReviewTables());
   root.querySelector("#clear-filter")?.addEventListener("click", () => {
-    kindFilter = "全部"; qualityFilter = "全部"; nameFilter = ""; sortFilter = "catalog";
+    kindFilter = "全部"; qualityFilter = "全部"; nameFilter = "";
+    syncReviewFilterSort();
     if (kind) kind.value = kindFilter;
     if (quality) quality.value = qualityFilter;
     if (name) name.value = nameFilter;
