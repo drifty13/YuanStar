@@ -37,6 +37,8 @@ import { buildProductReviewCandidates, isProductReviewCandidateComplete, product
 import { createUserExport, createXlsxExport, previewJsonImport, previewXlsxImport, safeExportFilename, type DataImportPreview } from "./product-data-transfer";
 import { EXPERIENCE_RULES_ASSET, loadExperienceRulesWorkbook, stage624RunsRequired, summarizeExperiencePlans, type ExperienceRules, type InstanceExperiencePlan, type PurpleWhiteRequirement } from "./experience-rules";
 import { buildCurrentInstanceUpdate, hasCurrentInstanceUpdate } from "./product-current-instance-update";
+import { buildInventorySummaryGroups, resolveSummaryExperienceScope, summarySelectionStillVisible, type InventorySummaryGroup, type SummaryExperienceScope } from "./product-summary-view";
+import { canUseUiOnlyHistory, pruneStaleUiOnlyHistory } from "./product-review-history";
 import "./product.css";
 
 type Quality = "橙" | "紫" | "蓝" | "绿" | "白";
@@ -74,8 +76,12 @@ let selectedPane: Pane = "current";
 let kindFilter = "全部";
 let qualityFilter = "全部";
 let nameFilter = "";
+let appliedNameFilter = "";
 type ReviewSortFilter = "catalog" | "name" | "level" | "target";
 let sortFilter: ReviewSortFilter = "catalog";
+type InventoryViewMode = "detail" | "summary";
+let viewMode: InventoryViewMode = "detail";
+let summarySelectedGroupKey: string | null = null;
 let preFilterSortFilter: ReviewSortFilter | null = null;
 let reviewFilterWasActive = false;
 let reviewIsComposing = false;
@@ -110,7 +116,19 @@ const showAllReviewImages = new Set<string>();
 const editingReviewOccurrences = new Set<string>();
 const completedReviewOccurrences = new Set<string>();
 const invalidReviewOccurrences = new Set<string>();
-type ReviewUiSnapshot = { resolution: ReconcileResolutionV1; completedOccurrenceIds: string[] };
+type ReviewNavigationSnapshot = {
+  viewMode: InventoryViewMode;
+  kindFilter: string;
+  qualityFilter: string;
+  nameFilter: string;
+  appliedNameFilter: string;
+  sortFilter: ReviewSortFilter;
+  preFilterSortFilter: ReviewSortFilter | null;
+  reviewFilterWasActive: boolean;
+  summarySelectedGroupKey: string | null;
+};
+let drillDownOrigin: ReviewNavigationSnapshot | null = null;
+type ReviewUiSnapshot = ReviewNavigationSnapshot & { resolution: ReconcileResolutionV1; completedOccurrenceIds: string[]; drillDownOrigin: ReviewNavigationSnapshot | null };
 type ReviewHistoryEntry = { before: ReviewUiSnapshot; after: ReviewUiSnapshot; revisionAfter: number; workspaceMutation: boolean };
 const reviewUiUndo: ReviewHistoryEntry[] = [];
 const reviewUiRedo: ReviewHistoryEntry[] = [];
@@ -119,6 +137,7 @@ type ImageViewerItem = { id: string; objectUrl: string; filename: string; detail
 let imageViewer: { items: ImageViewerItem[]; index: number; zoom: number; revocableUrls: string[] } | null = null;
 let toastMessage = "";
 let toastTimer: number | null = null;
+let summaryClickTimer: number | null = null;
 
 function readStorage<T>(key: string): T | null {
   try { return JSON.parse(window.localStorage.getItem(key) ?? "null") as T | null; } catch { return null; }
@@ -204,7 +223,7 @@ async function runWorkspaceMutation<T>(mutation: (session: import("./business/se
   reviewSaveState = "saving"; reviewError = ""; renderReview();
   try {
     const committed = await workspaceController.mutate(mutation) as { context: ProductWorkspaceContext; result: T };
-    applyWorkspaceContext(committed.context); syncPendingOcrReviewFromWorkspace(); after?.(committed.result); reviewSaveState = "saved";
+    applyWorkspaceContext(committed.context); pruneStaleReviewUiOnlyHistory(); syncPendingOcrReviewFromWorkspace(); after?.(committed.result); reviewSaveState = "saved";
   } catch (error) {
     if (error instanceof WorkspaceRevisionConflictError) {
       applyWorkspaceContext(await workspaceController.reload()); syncPendingOcrReviewFromWorkspace(); reviewSaveState = "reloaded"; reviewError = "";
@@ -215,12 +234,19 @@ async function runWorkspaceMutation<T>(mutation: (session: import("./business/se
   renderReview(intent, viewport);
 }
 
+function captureReviewNavigation(): ReviewNavigationSnapshot {
+  return { viewMode, kindFilter, qualityFilter, nameFilter, appliedNameFilter, sortFilter, preFilterSortFilter, reviewFilterWasActive, summarySelectedGroupKey };
+}
+function restoreReviewNavigation(snapshot: ReviewNavigationSnapshot): void {
+  ({ viewMode, kindFilter, qualityFilter, nameFilter, appliedNameFilter, sortFilter, preFilterSortFilter, reviewFilterWasActive, summarySelectedGroupKey } = snapshot);
+}
 function captureReviewUi(): ReviewUiSnapshot {
-  return { resolution: JSON.parse(JSON.stringify(pendingOcrReview?.resolution ?? {})) as ReconcileResolutionV1, completedOccurrenceIds: [...completedReviewOccurrences].sort() };
+  return { ...captureReviewNavigation(), resolution: JSON.parse(JSON.stringify(pendingOcrReview?.resolution ?? {})) as ReconcileResolutionV1, completedOccurrenceIds: [...completedReviewOccurrences].sort(), drillDownOrigin: drillDownOrigin ? { ...drillDownOrigin } : null };
 }
 function restoreReviewUi(snapshot: ReviewUiSnapshot): void {
-  if (!pendingOcrReview) return;
-  pendingOcrReview.resolution = JSON.parse(JSON.stringify(snapshot.resolution)) as ReconcileResolutionV1;
+  restoreReviewNavigation(snapshot);
+  drillDownOrigin = snapshot.drillDownOrigin ? { ...snapshot.drillDownOrigin } : null;
+  if (pendingOcrReview) pendingOcrReview.resolution = JSON.parse(JSON.stringify(snapshot.resolution)) as ReconcileResolutionV1;
   completedReviewOccurrences.clear();
   snapshot.completedOccurrenceIds.forEach((id) => completedReviewOccurrences.add(id));
   invalidReviewOccurrences.clear();
@@ -240,10 +266,22 @@ function reviewHistoryEntry(direction: "undo" | "redo"): ReviewHistoryEntry | nu
 function canUseReviewHistory(direction: "undo" | "redo"): boolean {
   const entry = reviewHistoryEntry(direction);
   if (!entry || !workspaceContext) return false;
+  if (!canUseUiOnlyHistory(entry, workspaceContext.record.revision)) return false;
   if (!entry.workspaceMutation) return true;
   return direction === "undo"
     ? entry.revisionAfter === workspaceContext.record.revision && workspaceController.canUndo
     : workspaceController.canRedo;
+}
+
+function pruneStaleReviewUiOnlyHistory(): void {
+  if (!workspaceContext) return;
+  const revision = workspaceContext.record.revision;
+  const prune = (entries: ReviewHistoryEntry[]): void => {
+    const retained = pruneStaleUiOnlyHistory(entries, revision);
+    entries.splice(0, entries.length, ...retained);
+  };
+  prune(reviewUiUndo);
+  prune(reviewUiRedo);
 }
 
 function runReviewWorkspaceMutation<T>(occurrenceId: string, mutation: (session: import("./business/session").WorkspaceSession) => T, after: (result: T) => void): void {
@@ -254,7 +292,7 @@ function runReviewWorkspaceMutation<T>(occurrenceId: string, mutation: (session:
 const qualityPriority: Record<Quality, number> = { 橙: 0, 紫: 1, 蓝: 2, 绿: 3, 白: 4 };
 const kindPriority: Record<Star["kind"], number> = { 主星: 0, 辅星: 1 };
 
-function nameSearchTerms(): string[] { return nameFilter.split(/[\s,，、;；]+/).map((term) => term.trim()).filter(Boolean); }
+function nameSearchTerms(value = appliedNameFilter): string[] { return value.split(/[\s,，、;；]+/).map((term) => term.trim()).filter(Boolean); }
 function hasActiveReviewFilter(): boolean { return kindFilter !== "全部" || qualityFilter !== "全部" || nameSearchTerms().length > 0; }
 function syncReviewFilterSort(): void {
   const hasActiveFilter = hasActiveReviewFilter();
@@ -293,6 +331,9 @@ function selectedExperiencePlan(selected: Star): InstanceExperiencePlan {
     ? Math.min(60, Math.max(selected.level, planEditDraft)) : selected.targetLevel;
   return { starInstanceId: selected.starInstanceId, currentLevel: selected.level, targetLevel: draftTarget };
 }
+function persistedExperiencePlan(star: Star): InstanceExperiencePlan {
+  return { starInstanceId: star.starInstanceId, currentLevel: star.level, targetLevel: star.targetLevel };
+}
 function requirementText(requirement: PurpleWhiteRequirement): string { return `紫星曜 ${requirement.purple} 颗　白星曜 ${requirement.white} 颗`; }
 function experienceNeedsTemplate(selected: Star): string {
   const failure = experienceRulesError ? `经验星曜规则加载失败，暂无法计算计划需求。${experienceRulesError ? ` ${experienceRulesError}` : ""}` : "正在加载经验星曜规则…";
@@ -308,8 +349,9 @@ function experienceNeedsTemplate(selected: Star): string {
   return `<article class="experience-needs"><h3>计划经验星曜需求</h3><dl><div><dt>当前选中行</dt><dd>${html(`${selected.name} ${selected.level}级 → ${selectedPlan.targetLevel}级`)}</dd><strong>需要 ${requirementText(selectedSummary.required)}</strong></div><div><dt>${hasActiveReviewFilter() ? "完成当前筛选计划所需" : "完成全部计划所需"}</dt><dd>还需6-24 ${totalRuns} 次</dd><strong>${requirementText(summary.required)}</strong></div><div><dt>扣除当前背包后仍缺</dt><dd>${unknownInventory ? "当前经验星曜数量未完整确认，暂无法计算缺口" : `还需6-24 ${gapRuns} 次`}</dd><strong>${unknownInventory ? "" : requirementText(summary.remaining!)}</strong></div></dl></article>`;
 }
 function refreshExperienceNeeds(): void {
-  const selected = selectedStar();
   const existing = root.querySelector<HTMLElement>(".experience-needs");
+  if (viewMode === "summary") { if (existing) existing.outerHTML = summaryExperienceNeedsTemplate(); return; }
+  const selected = selectedStar();
   if (selected && existing) existing.outerHTML = experienceNeedsTemplate(selected);
 }
 
@@ -445,6 +487,59 @@ function panelRows(pane: Pane): string {
   }).join("");
 }
 
+function summaryGroups(): InventorySummaryGroup[] {
+  return buildInventorySummaryGroups(filteredStars(), (name) => browserCatalog.orderIndex(name));
+}
+
+function summaryPanelRows(pane: Pane): string {
+  const groups = summaryGroups();
+  return groups.map((group, index) => {
+    const selected = group.key === summarySelectedGroupKey;
+    const kindDivider = index > 0 && groups[index - 1]?.kind !== group.kind;
+    const description = starDescription(group.name);
+    const quality = qualityFilter === "全部" ? "—" : qualityMark(qualityFilter as Quality);
+    return `<tr class="inventory-row summary-row${selected ? " is-selected" : ""}${kindDivider ? " is-kind-divider" : ""}" data-summary-group-key="${html(group.key)}" data-pane="${pane}" tabindex="0" aria-selected="${selected}">
+      <td class="check-cell"><input type="checkbox" aria-label="选择 ${html(group.name)} 汇总" ${selected ? "checked" : ""} /></td>
+      <td>${group.kind}</td><td class="name-cell">${description ? `<button class="star-name-tooltip-trigger" type="button" data-star-description-name="${html(group.name)}">${html(group.name)}</button>` : html(group.name)}</td>
+      <td>—</td><td>${quality}</td><td class="quantity-cell">本组共 ${group.count} 颗</td>
+    </tr>`;
+  }).join("");
+}
+
+function reviewRows(pane: Pane): string { return viewMode === "summary" ? summaryPanelRows(pane) : panelRows(pane); }
+function reviewCountLabel(pane: Pane): string {
+  const count = filteredStars().length;
+  if (viewMode === "detail") return pane === "current" ? `（${count} 颗）` : `（对应 ${count} 颗）`;
+  const groups = summaryGroups().length;
+  return pane === "current" ? `（${groups} 组 · ${count} 颗）` : `（对应 ${groups} 组 · ${count} 颗）`;
+}
+
+function summaryExperienceScope(): SummaryExperienceScope {
+  return resolveSummaryExperienceScope({
+    allStars: displayStars(),
+    filteredStars: filteredStars(),
+    selectedGroupKey: summarySelectedGroupKey,
+    hasActiveFilter: hasActiveReviewFilter(),
+  });
+}
+function summaryExperienceTitle(scope: SummaryExperienceScope): string {
+  if (scope.kind === "summary-group") return "完成当前选中组所需";
+  return scope.kind === "filtered" ? "完成当前筛选所需" : "完成全部计划所需";
+}
+function summaryExperienceNeedsTemplate(): string {
+  const scope = summaryExperienceScope();
+  const title = summaryExperienceTitle(scope);
+  const failure = experienceRulesError ? `经验星曜规则加载失败，暂无法计算计划需求。 ${experienceRulesError}` : "正在加载经验星曜规则…";
+  if (!experienceRules) return `<article class="experience-needs"><h3>计划经验星曜需求</h3><dl><div><dt>当前选中行</dt><dd>—</dd><strong>需要 紫星曜 0 颗　白星曜 0 颗</strong></div><div><dt>${title}</dt><dd>${html(failure)}</dd><strong></strong></div><div><dt>扣除当前背包后仍缺</dt><dd>${html(failure)}</dd><strong></strong></div></dl></article>`;
+  const starsById = new Map(displayStars().map((star) => [star.starInstanceId, star]));
+  const plans = scope.starIds.map((starInstanceId) => starsById.get(starInstanceId)).filter((star): star is Star => star != null).map(persistedExperiencePlan);
+  const summary = summarizeExperiencePlans(plans, experienceRules, workspaceContext!.record.snapshot.experience);
+  const unknownInventory = summary.remaining == null;
+  const totalRuns = stage624RunsRequired(summary.required.experience, experienceRules);
+  const gapRuns = unknownInventory ? null : stage624RunsRequired(summary.remaining!.experience, experienceRules);
+  return `<article class="experience-needs"><h3>计划经验星曜需求</h3><dl><div><dt>当前选中行</dt><dd>—</dd><strong>需要 紫星曜 0 颗　白星曜 0 颗</strong></div><div><dt>${title}</dt><dd>还需6-24 ${totalRuns} 次</dd><strong>${requirementText(summary.required)}</strong></div><div><dt>扣除当前背包后仍缺</dt><dd>${unknownInventory ? "当前经验星曜数量未完整确认，暂无法计算缺口" : `还需6-24 ${gapRuns} 次`}</dd><strong>${unknownInventory ? "" : requirementText(summary.remaining!)}</strong></div></dl></article>`;
+}
+
 function reviewTemplate(): string {
   const selected = selectedStar();
   if (!workspaceContext) return `<section class="review-page" aria-label="人工核对"><p class="review-overview">${reviewError || "正在加载当前工作区…"}</p></section>`;
@@ -471,20 +566,23 @@ function reviewTemplate(): string {
         <label>大类<select id="kind-filter"><option>全部</option><option>主星</option><option>辅星</option></select></label>
         <label>品质<select id="quality-filter"><option>全部</option><option>橙</option><option>紫</option><option>蓝</option><option>绿</option><option>白</option></select></label>
         <label class="filter-search">标准名称搜索<input id="name-filter" type="search" placeholder="可用空格或逗号分隔" value="${nameFilter}" /></label>
-        <label>排序<select id="sort-filter"><option value="catalog">默认综合</option><option value="name">名称排序</option><option value="level">当前等级</option><option value="target">计划等级</option></select></label>
+        <label>视图<button class="review-view-toggle" id="view-mode-toggle" type="button" aria-pressed="${viewMode === "summary"}">${viewMode === "summary" ? "汇总" : "明细"}</button></label>
+        ${viewMode === "summary"
+          ? `<label>排序<button class="review-sort-locked" id="sort-filter" type="button" aria-disabled="true">名称排序</button></label>`
+          : `<label>排序<select id="sort-filter"><option value="catalog">默认综合</option><option value="name">名称排序</option><option value="level">当前等级</option><option value="target">计划等级</option></select></label>`}
         <button class="button button-secondary" id="apply-filter" type="button">应用筛选</button><button class="button button-tertiary danger-action" id="clear-filter" type="button">清除筛选</button>
       </div>
       <dl class="inventory-facts"><div><dt>游戏版本</dt><dd>${workspaceContext.record.snapshot.gameVersion}</dd></div><div><dt>账号名称</dt><dd data-display-locale-ignore>${html(workspaceContext.account.displayName)}</dd></div><div><dt>当前汇总</dt><dd>${total}颗</dd></div><div class="editable-fact"><dt>背包数量</dt><dd><input id="bag-quantity" type="number" min="0" value="${bagQuantity ?? ""}" aria-label="背包数量" /></dd></div><div class="editable-fact"><dt>背包容量</dt><dd><input id="bag-capacity" type="number" min="0" value="${bagCapacity ?? ""}" aria-label="背包容量" /></dd></div><div><dt>保存状态</dt><dd class="save-state ${reviewSaveState === "failed" ? "warning-value" : ""}">${saveStateLabel()}</dd></div></dl>
     </section>
     <section class="inventory-grid" aria-label="当前背包与计划背包">
-      <article class="inventory-panel"><header><h2>当前背包 <span id="current-count">（${filteredStars().length} 颗）</span></h2><small>点击任意行进行核对</small></header><div class="table-scroll" id="current-scroll"><table><thead><tr><th></th><th>大类</th><th>标准名称</th><th>等级</th><th>品质</th><th>数量</th></tr></thead><tbody id="current-rows">${panelRows("current")}</tbody></table></div></article>
-      <article class="inventory-panel"><header><h2>计划背包 <span id="plan-count">（对应 ${filteredStars().length} 颗）</span></h2><small>对应行自动同步</small></header><div class="table-scroll" id="plan-scroll"><table><thead><tr><th></th><th>大类</th><th>标准名称</th><th>计划等级</th><th>品质</th><th>数量</th></tr></thead><tbody id="plan-rows">${panelRows("plan")}</tbody></table></div></article>
+      <article class="inventory-panel"><header><h2>当前背包 <span id="current-count">${reviewCountLabel("current")}</span></h2><small>${viewMode === "summary" ? "单击选组，双击任意位置查看逐颗明细" : "点击任意行进行核对"}</small></header><div class="table-scroll" id="current-scroll"><table><thead><tr><th></th><th>大类</th><th>标准名称</th><th>等级</th><th>品质</th><th>数量</th></tr></thead><tbody id="current-rows">${reviewRows("current")}</tbody></table></div></article>
+      <article class="inventory-panel"><header><h2>计划背包 <span id="plan-count">${reviewCountLabel("plan")}</span></h2><small>${viewMode === "summary" ? "与当前背包同步汇总" : "对应行自动同步"}</small></header><div class="table-scroll" id="plan-scroll"><table><thead><tr><th></th><th>大类</th><th>标准名称</th><th>计划等级</th><th>品质</th><th>数量</th></tr></thead><tbody id="plan-rows">${reviewRows("plan")}</tbody></table></div></article>
     </section>
-    <section class="edit-section" aria-label="当前背包与计划背包编辑区">
+    ${viewMode === "summary" ? "" : `<section class="edit-section" aria-label="当前背包与计划背包编辑区">
       <article class="edit-panel current-editor" data-edit-panel="current"><header><p class="section-kicker">当前背包编辑</p><h2>${selected.name} <span>${selected.kind} · ${qualityMark(selected.quality)}</span></h2></header><div class="field-grid"><label>大类<select data-current-field="kind">${["主星", "辅星"].map((kind) => `<option ${kind === currentDraft.kind ? "selected" : ""}>${kind}</option>`).join("")}</select></label><label>标准名称<select data-current-field="name">${nameOptions(currentDraft.kind, currentDraft.name)}</select></label><label>当前等级<input data-current-field="level" type="number" min="1" max="60" value="${currentDraft.level}" /></label><label>品质<select data-current-field="quality">${(["橙", "紫", "蓝", "绿", "白"] as Quality[]).map((quality) => `<option ${quality === currentDraft.quality ? "selected" : ""}>${quality}</option>`).join("")}</select></label></div><div class="editor-actions"><button class="button button-secondary positive-action" id="add-current-row" type="button">新增当前行</button><button class="button button-tertiary danger-action" id="delete-current-row" type="button">删除当前行</button></div></article>
       <article class="edit-panel plan-editor" data-edit-panel="plan"><header><p class="section-kicker">计划背包编辑</p><h2>${selected.name} <span>${planned ? `${selected.level}级 → ${selected.targetLevel}级` : "保持当前等级"}</span></h2></header><div class="field-grid plan-field-grid"><label>当前等级<input value="${selected.level}" readonly /></label><label>计划等级<input id="target-level" type="number" min="${selected.level}" max="60" value="${effectivePlanLevel}" /></label><label>计划状态<input value="${effectivePlanLevel === selected.level ? "保持当前" : "已设置计划"}" readonly /></label></div><div class="plan-actions"><div><button class="button button-secondary" id="restore-current" type="button" ${selected.targetLevel === selected.level ? "disabled" : ""}>恢复为当前等级</button><button class="button button-secondary" id="quick-sixty" type="button" ${selected.targetLevel === 60 ? "disabled" : ""}>快捷计划60级</button></div><button class="button button-tertiary danger-action" id="reset-plans" type="button">重置全部计划</button></div></article>
-    </section>
-    <section class="experience-section" aria-labelledby="experience-title"><header><div><p class="section-kicker">经验星曜</p><h2 id="experience-title">当前经验星曜 / 计划经验星曜需求</h2></div><small>当前库存可编辑；需求按正式规则实时计算</small></header><div class="experience-grid"><article class="experience-editor" data-experience-editor><h3>当前经验星曜${experienceWarning ? ` <span class="experience-inline-warning">${html(experienceWarning)}</span>` : ""}</h3><div class="experience-editor-row"><div class="experience-count"><label>橙星曜数量<input data-experience-field="orange" value="${pendingExperienceValue("orange")}" /></label><label>紫星曜数量<input data-experience-field="purple" value="${pendingExperienceValue("purple")}" /></label><label>白星曜数量<input data-experience-field="white" value="${pendingExperienceValue("white")}" /></label></div><button class="button button-secondary" id="view-experience-source" type="button" ${experienceSourceImageId ? `data-experience-source="${html(experienceSourceImageId)}"` : "disabled"} title="${experienceSourceImageId ? "查看经验星曜原图" : "当前工作区暂无可查看的经验星曜原图"}">查看经验星曜原图</button></div></article>${experienceNeedsTemplate(selected)}</div></section>
+    </section>`}
+    <section class="experience-section" aria-labelledby="experience-title"><header><div><p class="section-kicker">经验星曜</p><h2 id="experience-title">当前经验星曜 / 计划经验星曜需求</h2></div><small>当前库存可编辑；需求按正式规则实时计算</small></header><div class="experience-grid"><article class="experience-editor" data-experience-editor><h3>当前经验星曜${experienceWarning ? ` <span class="experience-inline-warning">${html(experienceWarning)}</span>` : ""}</h3><div class="experience-editor-row"><div class="experience-count"><label>橙星曜数量<input data-experience-field="orange" value="${pendingExperienceValue("orange")}" /></label><label>紫星曜数量<input data-experience-field="purple" value="${pendingExperienceValue("purple")}" /></label><label>白星曜数量<input data-experience-field="white" value="${pendingExperienceValue("white")}" /></label></div><button class="button button-secondary" id="view-experience-source" type="button" ${experienceSourceImageId ? `data-experience-source="${html(experienceSourceImageId)}"` : "disabled"} title="${experienceSourceImageId ? "查看经验星曜原图" : "当前工作区暂无可查看的经验星曜原图"}">查看经验星曜原图</button></div></article>${viewMode === "summary" ? summaryExperienceNeedsTemplate() : experienceNeedsTemplate(selected)}</div></section>
     <section class="ocr-review" aria-labelledby="ocr-review-title"><button class="ocr-summary" id="toggle-ocr-review" type="button" aria-expanded="${ocrListExpanded}"><span><strong id="ocr-review-title">OCR图片人工复核</strong> <em>${pendingOcrReview ? pendingOcrReview.persisted ? "已保存识别结果，可再次核对" : "识别后补充检查" : "当前工作区来源与复核"}</em></span><span class="ocr-toggle-label">${ocrListExpanded ? "收起" : "展开"}</span></button><div class="ocr-review-list${ocrListExpanded ? "" : " is-collapsed"}">${pendingOcrReviewTemplate()}</div></section>
   </section>`;
 }
@@ -570,7 +668,7 @@ function restoreScroll(values: Record<Pane, number>): void {
   if (plan) plan.scrollTop = values.plan;
 }
 
-type ReviewScrollIntent = "keep" | "top" | { pane: Pane; sourceScroll: number; relativeTop: number } | { starInstanceId: string; targetVisualRow: number };
+type ReviewScrollIntent = "keep" | "top" | { pane: Pane; sourceScroll: number; relativeTop: number } | { summaryPane: Pane; sourceScroll: number; relativeTop: number; groupKey: string } | { starInstanceId: string; targetVisualRow: number };
 
 type ReviewViewportSnapshot = { pageScrollY: number; reviewScrollTop: number; anchorOccurrenceId: string | null; anchorTop: number | null };
 
@@ -606,6 +704,7 @@ function renderReview(intent: ReviewScrollIntent = "keep", viewport: ReviewViewp
   if (intent === "top") requestAnimationFrame(scrollSelectedRowsToTop);
   if (typeof intent === "object") requestAnimationFrame(() => {
     if ("starInstanceId" in intent) scrollStarRowsToVisualRow(intent);
+    else if ("summaryPane" in intent) alignSummaryCounterpartRow(intent);
     else alignCounterpartRow(intent);
   });
   if (intent === "keep") requestAnimationFrame(() => restoreReviewViewport(viewport));
@@ -765,6 +864,19 @@ function alignCounterpartRow(intent: Extract<ReviewScrollIntent, { pane: Pane }>
   if (target && counterpart) target.scrollTop = Math.max(0, counterpart.offsetTop - intent.relativeTop);
 }
 
+function summaryRowFor(pane: Pane, groupKey: string): HTMLElement | null {
+  return [...root.querySelectorAll<HTMLElement>(`[data-pane="${pane}"][data-summary-group-key]`)].find((row) => row.dataset.summaryGroupKey === groupKey) ?? null;
+}
+
+function alignSummaryCounterpartRow(intent: Extract<ReviewScrollIntent, { summaryPane: Pane }>): void {
+  const source = root.querySelector<HTMLElement>(`#${intent.summaryPane}-scroll`);
+  const counterpartPane: Pane = intent.summaryPane === "current" ? "plan" : "current";
+  const target = root.querySelector<HTMLElement>(`#${counterpartPane}-scroll`);
+  const counterpart = summaryRowFor(counterpartPane, intent.groupKey);
+  if (source) source.scrollTop = intent.sourceScroll;
+  if (target && counterpart) target.scrollTop = Math.min(Math.max(0, counterpart.offsetTop - intent.relativeTop), Math.max(0, target.scrollHeight - target.clientHeight));
+}
+
 function scrollSelectedRowsToTop(): void {
   (["current", "plan"] as Pane[]).forEach((pane) => {
     const container = root.querySelector<HTMLElement>(`#${pane}-scroll`);
@@ -792,15 +904,19 @@ function refreshReviewTables(): void {
   hideStarDescription();
   const currentRows = root.querySelector<HTMLElement>("#current-rows");
   const planRows = root.querySelector<HTMLElement>("#plan-rows");
-  const count = filteredStars().length;
-  if (currentRows) currentRows.innerHTML = panelRows("current");
-  if (planRows) planRows.innerHTML = panelRows("plan");
+  normalizeSummarySelection();
+  if (currentRows) currentRows.innerHTML = reviewRows("current");
+  if (planRows) planRows.innerHTML = reviewRows("plan");
   const currentCount = root.querySelector<HTMLElement>("#current-count");
   const planCount = root.querySelector<HTMLElement>("#plan-count");
-  if (currentCount) currentCount.textContent = `（${count} 颗）`;
-  if (planCount) planCount.textContent = `（对应 ${count} 颗）`;
+  if (currentCount) currentCount.textContent = reviewCountLabel("current");
+  if (planCount) planCount.textContent = reviewCountLabel("plan");
   refreshExperienceNeeds();
   bindReviewRows();
+}
+
+function normalizeSummarySelection(): void {
+  if (!summarySelectionStillVisible(summaryGroups(), summarySelectedGroupKey)) summarySelectedGroupKey = null;
 }
 
 function activatePane(pane: Pane): void {
@@ -862,7 +978,7 @@ function bindShellControls(): void {
       const focused = document.activeElement;
       if (focused instanceof HTMLElement && focused.matches("input, textarea, select, [contenteditable]")) return;
       const direction = event.key.toLowerCase() === "z" ? "undo" : event.key.toLowerCase() === "y" ? "redo" : null;
-      if (!direction || (direction === "undo" ? !workspaceController.canUndo : !workspaceController.canRedo)) return;
+      if (!direction || !(canUseReviewHistory(direction) || (direction === "undo" ? workspaceController.canUndo : workspaceController.canRedo))) return;
       event.preventDefault();
       void runWorkspaceHistory(direction);
     });
@@ -916,12 +1032,74 @@ async function restoreWorkspacePoint(restorePointId: string): Promise<void> {
 function bindReviewRows(): void {
   root.querySelectorAll<HTMLTableRowElement>(".inventory-row").forEach((row) => {
     const pane: Pane = row.dataset.pane === "plan" ? "plan" : "current";
+    const summaryGroup = row.dataset.summaryGroupKey;
+    if (summaryGroup) {
+      const choose = () => queueSummarySelection(summaryGroup, pane);
+      row.addEventListener("click", choose);
+      row.addEventListener("dblclick", () => { cancelQueuedSummarySelection(); drillDownSummaryGroup(summaryGroup); });
+      row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); choose(); } });
+      row.querySelector<HTMLInputElement>("input")?.addEventListener("click", (event) => { event.stopPropagation(); choose(); });
+      return;
+    }
     const choose = () => selectStar(row.dataset.starId ?? selectedId, pane);
     row.addEventListener("click", choose);
     row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); choose(); } });
     row.querySelector<HTMLInputElement>("input")?.addEventListener("click", (event) => { event.stopPropagation(); choose(); });
   });
   bindStarDescriptionTooltips();
+}
+
+function selectSummaryGroup(groupKey: string, pane: Pane): void {
+  const shouldAlign = summarySelectedGroupKey !== groupKey;
+  const source = root.querySelector<HTMLElement>(`#${pane}-scroll`);
+  const row = summaryRowFor(pane, groupKey);
+  const sourceScroll = source?.scrollTop ?? 0;
+  const relativeTop = row ? row.offsetTop - sourceScroll : 0;
+  summarySelectedGroupKey = summarySelectedGroupKey === groupKey ? null : groupKey;
+  renderReview(shouldAlign ? { summaryPane: pane, sourceScroll, relativeTop, groupKey } : "keep");
+}
+
+function cancelQueuedSummarySelection(): void {
+  if (summaryClickTimer != null) window.clearTimeout(summaryClickTimer);
+  summaryClickTimer = null;
+}
+
+function queueSummarySelection(groupKey: string, pane: Pane): void {
+  if (summaryClickTimer != null) return;
+  summaryClickTimer = window.setTimeout(() => { summaryClickTimer = null; selectSummaryGroup(groupKey, pane); }, 220);
+}
+
+function recordReviewNavigationMutation(before: ReviewUiSnapshot): void {
+  recordReviewUiMutation(before, false);
+}
+
+function drillDownSummaryGroup(groupKey: string): void {
+  const group = summaryGroups().find((candidate) => candidate.key === groupKey);
+  if (!group) return;
+  const before = captureReviewUi();
+  drillDownOrigin = captureReviewNavigation();
+  viewMode = "detail";
+  nameFilter = group.name;
+  appliedNameFilter = group.name;
+  summarySelectedGroupKey = null;
+  reviewFilterWasActive = hasActiveReviewFilter();
+  recordReviewNavigationMutation(before);
+  renderReview();
+}
+
+function toggleReviewView(): void {
+  const before = captureReviewUi();
+  if (viewMode === "summary") {
+    viewMode = "detail";
+  } else if (drillDownOrigin) {
+    restoreReviewNavigation(drillDownOrigin);
+    drillDownOrigin = null;
+  } else {
+    viewMode = "summary";
+    summarySelectedGroupKey = null;
+  }
+  recordReviewNavigationMutation(before);
+  renderReview();
 }
 
 function tooltipElement(): HTMLElement {
@@ -1086,28 +1264,49 @@ function bindReviewControls(): void {
   const kind = root.querySelector<HTMLSelectElement>("#kind-filter");
   const quality = root.querySelector<HTMLSelectElement>("#quality-filter");
   const name = root.querySelector<HTMLInputElement>("#name-filter");
-  const sort = root.querySelector<HTMLSelectElement>("#sort-filter");
+  const sort = root.querySelector<HTMLElement>("#sort-filter");
   const refreshAfterFilterChange = () => {
     syncReviewFilterSort();
-    if (sort) sort.value = sortFilter;
+    if (sort instanceof HTMLSelectElement) sort.value = sortFilter;
     refreshReviewTables();
   };
-  if (kind) { kind.value = kindFilter; kind.addEventListener("change", () => { kindFilter = kind.value; refreshAfterFilterChange(); }); }
-  if (quality) { quality.value = qualityFilter; quality.addEventListener("change", () => { qualityFilter = quality.value; refreshAfterFilterChange(); }); }
+  if (kind) { kind.value = kindFilter; kind.addEventListener("change", () => { const before = captureReviewUi(); kindFilter = kind.value; refreshAfterFilterChange(); recordReviewNavigationMutation(before); }); }
+  if (quality) { quality.value = qualityFilter; quality.addEventListener("change", () => { const before = captureReviewUi(); qualityFilter = quality.value; refreshAfterFilterChange(); recordReviewNavigationMutation(before); }); }
   if (name) {
     name.addEventListener("compositionstart", () => { reviewIsComposing = true; });
     name.addEventListener("input", () => { nameFilter = name.value; if (!reviewIsComposing) refreshAfterFilterChange(); });
     name.addEventListener("compositionend", () => { reviewIsComposing = false; nameFilter = name.value; refreshAfterFilterChange(); });
+    name.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.isComposing || reviewIsComposing) return;
+      event.preventDefault();
+      applyReviewFilters();
+    });
   }
-  if (sort) { sort.value = sortFilter; sort.addEventListener("change", () => { sortFilter = sort.value as ReviewSortFilter; refreshReviewTables(); }); }
-  root.querySelector("#apply-filter")?.addEventListener("click", () => refreshReviewTables());
+  if (sort instanceof HTMLSelectElement) { sort.value = sortFilter; sort.addEventListener("change", () => { sortFilter = sort.value as ReviewSortFilter; refreshReviewTables(); }); }
+  else if (sort) {
+    const explainLockedSort = (event: Event): void => { event.preventDefault(); showToast("名称汇总视图固定使用名称排序，请切换到逐颗明细后修改排序。"); };
+    sort.addEventListener("click", explainLockedSort);
+    sort.addEventListener("keydown", (event) => { if (["Enter", " ", "ArrowUp", "ArrowDown"].includes(event.key)) explainLockedSort(event); });
+  }
+  root.querySelector<HTMLButtonElement>("#view-mode-toggle")?.addEventListener("click", toggleReviewView);
+  const applyReviewFilters = (): void => {
+    const before = captureReviewUi();
+    appliedNameFilter = nameFilter;
+    syncReviewFilterSort();
+    normalizeSummarySelection();
+    recordReviewNavigationMutation(before);
+    refreshReviewTables();
+  };
+  root.querySelector("#apply-filter")?.addEventListener("click", applyReviewFilters);
   root.querySelector("#clear-filter")?.addEventListener("click", () => {
-    kindFilter = "全部"; qualityFilter = "全部"; nameFilter = "";
+    const before = captureReviewUi();
+    kindFilter = "全部"; qualityFilter = "全部"; nameFilter = ""; appliedNameFilter = "";
     syncReviewFilterSort();
     if (kind) kind.value = kindFilter;
     if (quality) quality.value = qualityFilter;
     if (name) name.value = nameFilter;
-    if (sort) sort.value = sortFilter;
+    if (sort instanceof HTMLSelectElement) sort.value = sortFilter;
+    recordReviewNavigationMutation(before);
     refreshReviewTables();
   });
   bindReviewRows();
@@ -1201,6 +1400,7 @@ async function runWorkspaceHistory(direction: "undo" | "redo"): Promise<void> {
         const context = direction === "undo" ? await workspaceController.undo() : await workspaceController.redo();
         if (!context) return;
         applyWorkspaceContext(context);
+        pruneStaleReviewUiOnlyHistory();
         syncPendingOcrReviewFromWorkspace();
       }
       if (!reviewEntry.workspaceMutation) restoreReviewUi(direction === "undo" ? reviewEntry.before : reviewEntry.after);
@@ -1218,7 +1418,7 @@ async function runWorkspaceHistory(direction: "undo" | "redo"): Promise<void> {
   reviewSaveState = "saving"; reviewError = ""; renderReview();
   try {
     const context = direction === "undo" ? await workspaceController.undo() : await workspaceController.redo();
-    if (context) { applyWorkspaceContext(context); syncPendingOcrReviewFromWorkspace(); }
+    if (context) { applyWorkspaceContext(context); pruneStaleReviewUiOnlyHistory(); syncPendingOcrReviewFromWorkspace(); }
     reviewSaveState = "saved";
   } catch (error) {
     reviewSaveState = "failed";
