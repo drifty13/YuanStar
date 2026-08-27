@@ -1,5 +1,6 @@
 import type { StarCatalog } from "./catalog.js";
 import { assertJsonSafe, type ImagePool, type JsonValue, type StarInstanceV1, type WorkspaceStateV1, WorkspaceDomainError } from "./model.js";
+import { validateOperatorStarLoadouts } from "./star-loadout.js";
 
 function clone<T>(value: T): T {
   assertJsonSafe(value);
@@ -31,6 +32,7 @@ function sortedInventory(inventory: StarInstanceV1[], catalog: StarCatalog): Sta
 
 export function normalizeWorkspaceState(snapshot: WorkspaceStateV1, catalog: StarCatalog): WorkspaceStateV1 {
   const normalized = clone(snapshot) as WorkspaceStateV1;
+  if (!normalized.operatorStarLoadouts) normalized.operatorStarLoadouts = {};
   if (!normalized.importReview.occurrences) normalized.importReview.occurrences = {};
   for (const occurrence of Object.values(normalized.importReview.occurrences)) {
     if (typeof occurrence.removedFromCurrentInventory === "undefined") occurrence.removedFromCurrentInventory = false;
@@ -61,6 +63,7 @@ export function normalizeWorkspaceState(snapshot: WorkspaceStateV1, catalog: Sta
     if (!["not_evaluated", "equipped", "unequipped", "unknown"].includes(instance.equippedState)) throw new WorkspaceDomainError("workspace_validation_error", "佩戴状态无效");
     if (!Number.isInteger(instance.provenance.sourceOrder) || instance.provenance.sourceOrder < 0) throw new WorkspaceDomainError("workspace_validation_error", "来源顺序无效");
   });
+  validateOperatorStarLoadouts(normalized);
 
   const inventoryById = new Map(normalized.inventory.map((instance) => [instance.starInstanceId, instance]));
   const planTargets: Record<string, number> = {};

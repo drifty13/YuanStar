@@ -1,4 +1,5 @@
 import { browserCatalog } from "./business/browser-catalog";
+import { createDisplayLocaleAdapter, displayTooltipText } from "./display-locale";
 import { WorkspaceDomainError } from "./business/model";
 import { automaticReconcileResolution, buildReconcileDraftFromBrowserRuntime, type ReconcileDraftV1, type ReconcileResolutionV1 } from "./business/reconcile";
 import { ProductWorkspaceController, WorkspaceRevisionConflictError, type ProductWorkspaceContext } from "./product-workspace";
@@ -63,6 +64,7 @@ let experienceRulesLoadPromise: Promise<void> | null = null;
 const rootElement = document.querySelector<HTMLElement>("#product-root");
 if (!rootElement) throw new Error("缺少 product root");
 const root: HTMLElement = rootElement;
+const displayLocaleAdapter = createDisplayLocaleAdapter(root, { onChange: () => renderPage() });
 
 const storedTab = readStorage<ProductTab>("yuanstar.product.tab");
 const storedSelected = readStorage<string>("yuanstar.product.selected");
@@ -418,7 +420,7 @@ function reviewSourcePreviewTemplate(): string {
   const viewer = imageViewer;
   const preview = viewer?.items[viewer.index];
   if (!viewer || !preview) return "";
-  return `<div class="image-lightbox" role="dialog" aria-modal="true" aria-label="图片预览"><button class="lightbox-backdrop" data-close-image-viewer type="button" aria-label="关闭图片预览"></button><article><header><div><strong>${html(preview.filename)}</strong><small>${html(preview.detail)} · ${viewer.index + 1} / ${viewer.items.length}</small></div><div class="lightbox-tools"><button class="button button-tertiary" type="button" data-image-viewer-zoom="out">缩小</button><output aria-live="polite">${viewer.zoom}%</output><button class="button button-tertiary" type="button" data-image-viewer-zoom="in">放大</button><button class="icon-button" data-close-image-viewer type="button" aria-label="关闭图片预览">×</button></div></header><div class="lightbox-image" data-image-viewer-wheel><div class="lightbox-media" style="--preview-zoom: ${viewer.zoom / 100}"><img src="${preview.objectUrl}" alt="${html(preview.filename)}" /></div></div><footer><button class="button button-tertiary" type="button" data-image-viewer-step="previous" ${viewer.index <= 0 ? "disabled" : ""}>上一张</button><button class="button button-tertiary" data-close-image-viewer type="button">关闭</button><button class="button button-tertiary" type="button" data-image-viewer-step="next" ${viewer.index >= viewer.items.length - 1 ? "disabled" : ""}>下一张</button></footer></article></div>`;
+  return `<div class="image-lightbox" role="dialog" aria-modal="true" aria-label="图片预览"><button class="lightbox-backdrop" data-close-image-viewer type="button" aria-label="关闭图片预览"></button><article><header><div><strong data-display-locale-ignore>${html(preview.filename)}</strong><small>${html(preview.detail)} · ${viewer.index + 1} / ${viewer.items.length}</small></div><div class="lightbox-tools"><button class="button button-tertiary" type="button" data-image-viewer-zoom="out">缩小</button><output aria-live="polite">${viewer.zoom}%</output><button class="button button-tertiary" type="button" data-image-viewer-zoom="in">放大</button><button class="icon-button" data-close-image-viewer type="button" aria-label="关闭图片预览">×</button></div></header><div class="lightbox-image" data-image-viewer-wheel><div class="lightbox-media" style="--preview-zoom: ${viewer.zoom / 100}"><img src="${preview.objectUrl}" alt="${html(preview.filename)}" data-display-locale-ignore-attributes /></div></div><footer><button class="button button-tertiary" type="button" data-image-viewer-step="previous" ${viewer.index <= 0 ? "disabled" : ""}>上一张</button><button class="button button-tertiary" data-close-image-viewer type="button">关闭</button><button class="button button-tertiary" type="button" data-image-viewer-step="next" ${viewer.index >= viewer.items.length - 1 ? "disabled" : ""}>下一张</button></footer></article></div>`;
 }
 
 function panelRows(pane: Pane): string {
@@ -472,7 +474,7 @@ function reviewTemplate(): string {
         <label>排序<select id="sort-filter"><option value="catalog">默认综合</option><option value="name">名称排序</option><option value="level">当前等级</option><option value="target">计划等级</option></select></label>
         <button class="button button-secondary" id="apply-filter" type="button">应用筛选</button><button class="button button-tertiary danger-action" id="clear-filter" type="button">清除筛选</button>
       </div>
-      <dl class="inventory-facts"><div><dt>游戏版本</dt><dd>${workspaceContext.record.snapshot.gameVersion}</dd></div><div><dt>账号名称</dt><dd>${html(workspaceContext.account.displayName)}</dd></div><div><dt>当前汇总</dt><dd>${total}颗</dd></div><div class="editable-fact"><dt>背包数量</dt><dd><input id="bag-quantity" type="number" min="0" value="${bagQuantity ?? ""}" aria-label="背包数量" /></dd></div><div class="editable-fact"><dt>背包容量</dt><dd><input id="bag-capacity" type="number" min="0" value="${bagCapacity ?? ""}" aria-label="背包容量" /></dd></div><div><dt>保存状态</dt><dd class="save-state ${reviewSaveState === "failed" ? "warning-value" : ""}">${saveStateLabel()}</dd></div></dl>
+      <dl class="inventory-facts"><div><dt>游戏版本</dt><dd>${workspaceContext.record.snapshot.gameVersion}</dd></div><div><dt>账号名称</dt><dd data-display-locale-ignore>${html(workspaceContext.account.displayName)}</dd></div><div><dt>当前汇总</dt><dd>${total}颗</dd></div><div class="editable-fact"><dt>背包数量</dt><dd><input id="bag-quantity" type="number" min="0" value="${bagQuantity ?? ""}" aria-label="背包数量" /></dd></div><div class="editable-fact"><dt>背包容量</dt><dd><input id="bag-capacity" type="number" min="0" value="${bagCapacity ?? ""}" aria-label="背包容量" /></dd></div><div><dt>保存状态</dt><dd class="save-state ${reviewSaveState === "failed" ? "warning-value" : ""}">${saveStateLabel()}</dd></div></dl>
     </section>
     <section class="inventory-grid" aria-label="当前背包与计划背包">
       <article class="inventory-panel"><header><h2>当前背包 <span id="current-count">（${filteredStars().length} 颗）</span></h2><small>点击任意行进行核对</small></header><div class="table-scroll" id="current-scroll"><table><thead><tr><th></th><th>大类</th><th>标准名称</th><th>等级</th><th>品质</th><th>数量</th></tr></thead><tbody id="current-rows">${panelRows("current")}</tbody></table></div></article>
@@ -492,13 +494,13 @@ function formatBytes(bytes: number): string { return `${(bytes / 1_000_000).toFi
 function findImportImage(id: string): ImportImage | undefined { return importImages.find((image) => image.sourceImageId === id); }
 
 function imageOptions(pool: OverlapPool, selectedId?: string): string {
-  return importImages.filter((image) => image.pool === pool).map((image) => `<option value="${image.sourceImageId}" ${image.sourceImageId === selectedId ? "selected" : ""}>${html(image.filename)}</option>`).join("");
+  return importImages.filter((image) => image.pool === pool).map((image) => `<option value="${image.sourceImageId}" data-display-locale-ignore ${image.sourceImageId === selectedId ? "selected" : ""}>${html(image.filename)}</option>`).join("");
 }
 
 function importPoolTemplate(pool: Pool): string {
   const images = sortProductImportImagesForDisplay(importImages.filter((image) => image.pool === pool));
   const classificationPending = hasClassifyingImportImages();
-  return `<section class="import-pool import-pool-${pool}" data-import-pool="${pool}" aria-label="${pool}池"><header><h2>${pool}池 <span>（${images.length} 张）</span></h2><button class="button button-secondary positive-action" data-confirm-pool="${pool}" type="button" ${isOcrLocked() || classificationPending || !images.length ? "disabled" : ""}>确认本池</button></header><div class="pool-thumbnail-scroll" data-pool-scroll="${pool}">${images.length ? images.map((image) => `<article class="thumbnail-card${image.confirmed ? " is-confirmed" : " is-unconfirmed"}${image.classificationStatus === "classifying" ? " is-classifying" : ""}" draggable="${!isOcrLocked() && image.classificationStatus !== "classifying"}" data-import-image="${image.sourceImageId}" aria-label="${html(image.filename)}"><button class="thumbnail-preview" type="button" data-preview-image="${image.sourceImageId}" aria-label="查看 ${html(image.filename)}"><span class="thumbnail-image"><img src="${image.objectUrl}" alt="${html(image.filename)}" /></span><span class="thumbnail-caption"><em>${importImages.findIndex((candidate) => candidate.sourceImageId === image.sourceImageId) + 1}</em><strong>${html(image.filename)}</strong><small>${html(importImageStatusLabel(image))}</small></span></button><button class="thumbnail-delete danger-action" type="button" data-delete-image="${image.sourceImageId}" aria-label="从${pool}池移除 ${html(image.filename)}" title="移除图片" ${isOcrLocked() ? "disabled" : ""}>×</button></article>`).join("") : `<div class="empty-pool-card"><span>暂无图片</span><small>${pool === "经验星曜" ? "可在此查看经验星曜完整页" : "添加图片后自动推荐分类"}</small></div>`}</div></section>`;
+  return `<section class="import-pool import-pool-${pool}" data-import-pool="${pool}" aria-label="${pool}池"><header><h2>${pool}池 <span>（${images.length} 张）</span></h2><button class="button button-secondary positive-action" data-confirm-pool="${pool}" type="button" ${isOcrLocked() || classificationPending || !images.length ? "disabled" : ""}>确认本池</button></header><div class="pool-thumbnail-scroll" data-pool-scroll="${pool}">${images.length ? images.map((image) => `<article class="thumbnail-card${image.confirmed ? " is-confirmed" : " is-unconfirmed"}${image.classificationStatus === "classifying" ? " is-classifying" : ""}" draggable="${!isOcrLocked() && image.classificationStatus !== "classifying"}" data-import-image="${image.sourceImageId}" aria-label="${html(image.filename)}" data-display-locale-ignore-attributes><button class="thumbnail-preview" type="button" data-preview-image="${image.sourceImageId}" aria-label="查看 ${html(image.filename)}" data-display-locale-ignore-attributes><span class="thumbnail-image"><img src="${image.objectUrl}" alt="${html(image.filename)}" data-display-locale-ignore-attributes /></span><span class="thumbnail-caption"><em>${importImages.findIndex((candidate) => candidate.sourceImageId === image.sourceImageId) + 1}</em><strong data-display-locale-ignore>${html(image.filename)}</strong><small>${html(importImageStatusLabel(image))}</small></span></button><button class="thumbnail-delete danger-action" type="button" data-delete-image="${image.sourceImageId}" aria-label="从${pool}池移除 ${html(image.filename)}" data-display-locale-ignore-attributes title="移除图片" ${isOcrLocked() ? "disabled" : ""}>×</button></article>`).join("") : `<div class="empty-pool-card"><span>暂无图片</span><small>${pool === "经验星曜" ? "可在此查看经验星曜完整页" : "添加图片后自动推荐分类"}</small></div>`}</div></section>`;
 }
 
 function overlapTemplate(pool: OverlapPool): string {
@@ -518,7 +520,7 @@ function importTemplate(): string {
   const accountLabel = account ? `${account.gameVersion} · ${account.displayName}` : unloadedAccountLabel;
   const gameVersionLabel = account?.gameVersion ?? "—";
   const accountNameLabel = account?.displayName ?? "—";
-  const accountOptions = (availableAccounts.length ? availableAccounts : account ? [account] : []).map((item) => `<option value="${html(item.accountId)}" ${item.accountId === account?.accountId ? "selected" : ""}>${html(`${item.gameVersion} · ${item.displayName}`)}</option>`).join("");
+  const accountOptions = (availableAccounts.length ? availableAccounts : account ? [account] : []).map((item) => `<option value="${html(item.accountId)}" data-display-locale-ignore ${item.accountId === account?.accountId ? "selected" : ""}>${html(`${item.gameVersion} · ${item.displayName}`)}</option>`).join("");
   return `<section class="import-page" aria-label="导入识别">
     <section class="import-account-requirements"><article class="import-account-panel"><header><p class="section-kicker">当前账号</p><h2>本机工作区账号</h2></header><div class="account-fields"><label>当前账号<select data-current-account aria-label="当前账号" ${isOcrLocked() ? "disabled" : ""}>${accountOptions || `<option>${html(accountLabel)}</option>`}</select></label><label>游戏版本<select data-account-game-version aria-label="游戏版本" ${isOcrLocked() ? "disabled" : ""}>${(["如鸢", "代号鸢"] as const).map((version) => `<option value="${version}" ${version === gameVersionLabel ? "selected" : ""}>${version}</option>`).join("")}</select></label><label>账号名称<input data-account-name value="${html(accountNameLabel)}" ${isOcrLocked() ? "disabled" : ""} /></label></div><div class="account-actions"><button class="button button-secondary positive-action" data-create-account type="button" ${isOcrLocked() ? "disabled" : ""}>新增账号</button><button class="button button-tertiary danger-action" data-delete-current-account type="button" ${isOcrLocked() ? "disabled" : ""}>删除当前账号</button></div></article><article class="screenshot-requirements"><header><p class="section-kicker">截图要求</p><h2>导入前确认</h2></header><ul><li>请上传同一账号、同一设备、同一次背包查看过程中的截图；截图过程中不要分解、升级、获得或消耗星石。</li><li>优先上传清晰、完整的原始截图；主星和辅星尽量减少前后截图重叠。</li><li>每张截图优先保证顶部第一行完整；页面底部半隐没行可以保留，后续可作为残片忽略。</li><li>若两张截图存在重复行，请明确标记前图和后图；主星、辅星通常各 1–2 组。</li><li>经验星石建议上传一张完整清晰页面；若未标记重叠不会阻断识别，但可能导致识别的星石数量偏高。</li></ul></article></section>
     <section class="import-pick-progress"><article class="file-picker-panel"><input id="image-file-input" type="file" accept="image/*" multiple hidden ${isOcrLocked() ? "disabled" : ""}/><button id="file-drop-zone" class="file-drop-zone" type="button" ${isOcrLocked() ? "disabled" : ""}><span class="drop-icon">＋</span><strong>点击选择图片或拖拽图片到这里</strong><small>支持选择、拖拽或 Ctrl+V 粘贴多张本地图片；文件只保留在本机。</small></button><p id="file-summary">已选文件：${importImages.length} 张　·　总大小：${formatBytes(totalSize)}　·　${hasClassifyingImportImages() ? "正在判断图片类型" : importImages.some((image) => !image.confirmed) ? "存在待确认分类" : importImages.length ? "分类均已确认" : "等待添加图片"}</p></article><article class="import-progress" id="import-progress-panel"><header><div><p class="section-kicker">导入任务进度</p><h2>${ocrStatusLabel()}</h2></div></header><dl><div><dt>任务状态</dt><dd>${ocrStatusLabel()}</dd></div><div><dt>当前阶段</dt><dd>${ocrUi.message || ocrStatusLabel()}</dd></div><div><dt>当前文件</dt><dd title="${html(currentFilename)}">${html(currentFilename)}</dd></div></dl><p>当前图片：${ocrUi.completed} / ${ocrUi.total || importImages.length} · 已完成：${ocrUi.completed} · 待处理：${Math.max(0, (ocrUi.total || importImages.length) - ocrUi.completed)} · 错误数：${ocrUi.error ? 1 : 0}</p><div class="progress-track"><span style="width:${progress}%"></span></div>${ocrUi.error ? `<small class="import-error">${html(ocrUi.error)}</small>` : `<small>${html(ocrUi.message || "图片尚未离开本机。")}</small>`}</article></section>
@@ -535,7 +537,7 @@ function ocrConfirmTemplate(): string {
 
 function deleteAccountConfirmTemplate(): string {
   if (!deleteAccountConfirmOpen || !workspaceContext) return "";
-  return `<div class="data-dialog" role="dialog" aria-modal="true" aria-label="删除账号"><button class="dialog-backdrop" data-cancel-delete-account type="button" aria-label="取消"></button><article><header><div><h2>删除账号</h2></div><button class="icon-button" data-cancel-delete-account type="button" aria-label="关闭">×</button></header><p class="dialog-note">确定删除账号「${html(workspaceContext.account.displayName)}」吗？</p><p class="dialog-note">该账号的背包数据将一并删除，此操作无法撤销。</p><div class="dialog-actions"><button class="button button-tertiary" data-cancel-delete-account type="button">取消</button><button class="button button-tertiary danger-action" data-confirm-delete-account type="button">确认删除</button></div></article></div>`;
+  return `<div class="data-dialog" role="dialog" aria-modal="true" aria-label="删除账号"><button class="dialog-backdrop" data-cancel-delete-account type="button" aria-label="取消"></button><article><header><div><h2>删除账号</h2></div><button class="icon-button" data-cancel-delete-account type="button" aria-label="关闭">×</button></header><p class="dialog-note">确定删除账号「<span data-display-locale-ignore>${html(workspaceContext.account.displayName)}</span>」吗？</p><p class="dialog-note">该账号的背包数据将一并删除，此操作无法撤销。</p><div class="dialog-actions"><button class="button button-tertiary" data-cancel-delete-account type="button">取消</button><button class="button button-tertiary danger-action" data-confirm-delete-account type="button">确认删除</button></div></article></div>`;
 }
 
 function dataToolsTemplate(): string {
@@ -551,7 +553,10 @@ function workspaceToolsTemplate(): string {
 
 function shellTemplate(): string {
   const importing = activeTab === "import";
-  return `<div class="product-shell"><header class="product-header"><div class="product-title-row"><h1>YuanStar 星石整理</h1></div><div class="product-nav-row"><nav class="product-tabs" aria-label="产品页面"><button class="product-tab${activeTab === "import" ? " is-active" : ""}" data-tab="import" type="button">导入识别</button><button class="product-tab${activeTab === "review" ? " is-active" : ""}" data-tab="review" type="button">人工核对</button></nav><div class="data-menu"><button class="data-menu-trigger" id="data-menu-trigger" aria-expanded="${dataMenuOpen}" aria-haspopup="menu" type="button">数据 <span>▾</span></button>${dataMenuOpen ? `<div class="data-menu-popover" role="menu"><button data-data-action="import" type="button" role="menuitem">导入数据</button><button data-data-action="export-json" type="button" role="menuitem">导出 JSON</button><button data-data-action="export-xlsx" type="button" role="menuitem">导出 XLSX</button></div>` : ""}</div></div></header><main id="page-content">${importing ? importTemplate() : reviewTemplate()}${!importing ? workspaceToolsTemplate() : ""}</main>${reviewSourcePreviewTemplate()}${dataToolsTemplate()}${ocrConfirmTemplate()}${deleteAccountConfirmTemplate()}${toastTemplate()}</div>`;
+  const traditional = displayLocaleAdapter.locale === "zh-Hant";
+  const toggleLabel = traditional ? "繁" : "简";
+  const toggleHint = traditional ? "切換為簡體" : "切换为繁体";
+  return `<div class="product-shell"><header class="product-header"><div class="product-title-row"><h1>YuanStar 星石整理</h1><button class="display-locale-toggle" data-display-locale-toggle data-display-locale-ignore type="button" title="${toggleHint}" aria-label="${toggleHint}">${toggleLabel}</button></div><div class="product-nav-row"><nav class="product-tabs" aria-label="产品页面"><button class="product-tab${activeTab === "import" ? " is-active" : ""}" data-tab="import" type="button">导入识别</button><button class="product-tab${activeTab === "review" ? " is-active" : ""}" data-tab="review" type="button">人工核对</button></nav><div class="data-menu"><button class="data-menu-trigger" id="data-menu-trigger" aria-expanded="${dataMenuOpen}" aria-haspopup="menu" type="button">数据 <span>▾</span></button>${dataMenuOpen ? `<div class="data-menu-popover" role="menu"><button data-data-action="import" type="button" role="menuitem">导入数据</button><button data-data-action="export-json" type="button" role="menuitem">导出 JSON</button><button data-data-action="export-xlsx" type="button" role="menuitem">导出 XLSX</button></div>` : ""}</div></div></header><main id="page-content">${importing ? importTemplate() : reviewTemplate()}${!importing ? workspaceToolsTemplate() : ""}</main>${reviewSourcePreviewTemplate()}${dataToolsTemplate()}${ocrConfirmTemplate()}${deleteAccountConfirmTemplate()}${toastTemplate()}</div>`;
 }
 
 function captureScroll(): Record<Pane, number> {
@@ -627,6 +632,7 @@ function renderPage(): void {
   bindShellControls();
   if (activeTab === "review") bindReviewControls();
   else { bindImportControls(); requestAnimationFrame(restoreImportPoolScroll); }
+  displayLocaleAdapter.apply();
 }
 
 function setActiveTab(tab: ProductTab): void { hideStarDescription(); if (activeTab === "import") captureImportPoolScroll(); activeTab = tab; writeStorage("yuanstar.product.tab", tab); renderPage(); if (tab === "review" && !workspaceContext) void loadProductWorkspace(); }
@@ -823,6 +829,7 @@ function bindShellControls(): void {
   root.querySelectorAll<HTMLButtonElement>("[data-cancel-delete-account]").forEach((button) => button.addEventListener("click", () => { deleteAccountConfirmOpen = false; renderPage(); }));
   root.querySelector<HTMLButtonElement>("[data-confirm-delete-account]")?.addEventListener("click", () => { void deleteCurrentProductAccount(); });
   root.querySelector<HTMLButtonElement>("#data-menu-trigger")?.addEventListener("click", (event) => { event.stopPropagation(); dataMenuOpen = !dataMenuOpen; renderPage(); });
+  root.querySelector<HTMLButtonElement>("[data-display-locale-toggle]")?.addEventListener("click", () => displayLocaleAdapter.toggle());
   root.querySelectorAll<HTMLButtonElement>("[data-data-action]").forEach((button) => button.addEventListener("click", () => {
     const action = button.dataset.dataAction;
     dataMenuOpen = false;
@@ -934,7 +941,7 @@ function showStarDescription(trigger: HTMLElement): void {
   const description = starDescription(trigger.dataset.starDescriptionName ?? "");
   if (!description) return;
   const tooltip = tooltipElement();
-  tooltip.textContent = description;
+  tooltip.textContent = displayTooltipText(description, displayLocaleAdapter.locale);
   tooltip.hidden = false;
   const bounds = trigger.getBoundingClientRect();
   const width = tooltip.offsetWidth;
@@ -1612,6 +1619,7 @@ function bindGlobalPaste(): void {
 }
 
 bindGlobalPaste();
+displayLocaleAdapter.start();
 renderPage();
 void loadExperienceRules();
 void loadProductWorkspace();

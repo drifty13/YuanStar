@@ -22,8 +22,11 @@ function circle(column: number, y: number, radius = 20): CircleProposal {
 
 equal(SUPPORT_STAR_NAMES.length, 24, "support catalog must use all production entries");
 for (const name of ["三台", "文昌", "文曲", "解神", "禄存", "地劫", "红鸾", "恩光"]) expect(SUPPORT_STAR_NAMES.includes(name), `support catalog should include ${name}`);
-equal(SUPPORT_ALIASES, {}, "production resources currently define no support-only aliases");
+equal(SUPPORT_ALIASES, { "天鉞": "天钺", "天馬": "天马", "天貴": "天贵", "陰煞": "阴煞", "祿存": "禄存", "左輔": "左辅", "紅鸞": "红鸾", "鈴星": "铃星" }, "confirmed Traditional aliases stay in the shared OCR resource");
 expect(resolveSupportName([{ text: "三台", confidence: 0.96, variant: "color" }]).normalized === "三台", "support canonical name should resolve");
+for (const [traditional, canonical] of Object.entries(SUPPORT_ALIASES)) {
+  expect(resolveSupportName([{ text: traditional, confidence: 0.96, variant: "color" }]).normalized === canonical, `${traditional} should normalize to Simplified canonical ${canonical}`);
+}
 expect(resolveSupportName([{ text: "未知", confidence: 0.99, variant: "color" }]).normalized === null, "unknown support name should require review");
 
 // 生产真实 aliases 只能进入各自目录，不能污染辅星或主星。

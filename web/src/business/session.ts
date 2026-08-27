@@ -1,7 +1,8 @@
 import type { StarCatalog } from "./catalog.js";
 import { WorkspaceHistory } from "./history.js";
-import type { EditableOccurrenceStateV1, ImagePool, Quality, GameVersion, StarInstanceV1, WorkspaceStateV1 } from "./model.js";
+import type { EditableOccurrenceStateV1, ImagePool, OperatorStarLoadoutSlot, OperatorStarLoadoutSlots, Quality, GameVersion, StarInstanceV1, WorkspaceStateV1 } from "./model.js";
 import { WorkspaceDomainError } from "./model.js";
+import { emptyOperatorStarLoadoutSlots, findStarLoadoutOccupancy, previewStarLoadout, type StarLoadoutPreviewV1, type StarLoadoutRequirementV1 } from "./star-loadout.js";
 import { createWorkspaceSnapshot, restoreWorkspaceSnapshot } from "./snapshot.js";
 import { invalidateConfirmedDuplicateRowsForOccurrence, recalculateWorkspacePostprocess, setRowOverlapResolution, type RowOverlapResolutionV1 } from "./postprocess.js";
 
@@ -50,6 +51,7 @@ export class WorkspaceSession {
   deleteInstance(starInstanceId: string): void {
     const instance = this.current.inventory.find((item) => item.starInstanceId === starInstanceId);
     if (!instance) throw new WorkspaceDomainError("star_instance_missing", "未找到星石实例");
+    if (findStarLoadoutOccupancy(this.current).has(starInstanceId)) throw new WorkspaceDomainError("star_instance_in_use", "该星石正在被密探佩戴；请先明确卸下或转移");
     if (instance.provenance.occurrenceId) {
       const audit = instance.provenance.audit;
       const sourceIds = audit && typeof audit === "object" && !Array.isArray(audit) && Array.isArray((audit as Record<string, unknown>).sourceOccurrenceIds)
@@ -82,6 +84,41 @@ export class WorkspaceSession {
   setExperienceQuantities(values: { orange: number | null; purple: number | null; white: number | null }): void {
     this.apply({ ...this.current, experience: { ...this.current.experience, ...values, manualFields: [...new Set([...this.current.experience.manualFields, "orange", "purple", "white"])] } });
   }
+  previewStarLoadout(operatorId: string, requirements: readonly StarLoadoutRequirementV1[]): StarLoadoutPreviewV1 {
+    const canonical = requirements.map((requirement) => {
+      const name = this.catalog.normalize(requirement.name);
+      const entry = this.catalog.entry(name);
+      if (!entry || entry.kind === "经验星石" || entry.kind !== requirement.kind) throw new WorkspaceDomainError("workspace_validation_error", "套组要求必须使用目录中的标准星石名称与大类");
+      return { kind: requirement.kind, name };
+    });
+    return previewStarLoadout(this.current, operatorId, canonical);
+  }
+  setOperatorStarLoadout(operatorId: string, slots: OperatorStarLoadoutSlots): void {
+    if (!operatorId.trim()) throw new WorkspaceDomainError("workspace_validation_error", "operatorId 不能为空");
+    const occupancy = findStarLoadoutOccupancy(this.current);
+    for (const id of Object.values(slots)) {
+      if (id == null) continue;
+      const occupied = occupancy.get(id);
+      if (occupied && occupied.operatorId !== operatorId) throw new WorkspaceDomainError("star_instance_occupied", `星石已被密探 ${occupied.operatorId} 的 ${occupied.slot} 槽位佩戴；请先明确转移`);
+    }
+    this.apply({ ...this.current, operatorStarLoadouts: { ...this.current.operatorStarLoadouts, [operatorId]: { operatorId, slots: { ...slots } } } });
+  }
+  clearOperatorStarSlot(operatorId: string, slot: OperatorStarLoadoutSlot): void {
+    const existing = this.current.operatorStarLoadouts[operatorId];
+    if (!existing) throw new WorkspaceDomainError("operator_loadout_missing", "未找到密探星石佩戴关系");
+    this.setOperatorStarLoadout(operatorId, { ...existing.slots, [slot]: null });
+  }
+  /** Explicitly moves an occupied instance; ordinary slot assignment never steals it. */
+  moveStarInstance(starInstanceId: string, fromOperatorId: string, fromSlot: OperatorStarLoadoutSlot, toOperatorId: string, toSlot: OperatorStarLoadoutSlot): void {
+    const occupancy = findStarLoadoutOccupancy(this.current).get(starInstanceId);
+    if (!occupancy || occupancy.operatorId !== fromOperatorId || occupancy.slot !== fromSlot) throw new WorkspaceDomainError("star_instance_move_source_mismatch", "星石当前佩戴位置与确认转移来源不一致");
+    const source = this.current.operatorStarLoadouts[fromOperatorId]!;
+    const target = this.current.operatorStarLoadouts[toOperatorId] ?? { operatorId: toOperatorId, slots: emptyOperatorStarLoadoutSlots() };
+    const nextLoadouts = fromOperatorId === toOperatorId
+      ? { ...this.current.operatorStarLoadouts, [fromOperatorId]: { ...source, slots: { ...source.slots, [fromSlot]: null, [toSlot]: starInstanceId } } }
+      : { ...this.current.operatorStarLoadouts, [fromOperatorId]: { ...source, slots: { ...source.slots, [fromSlot]: null } }, [toOperatorId]: { ...target, slots: { ...target.slots, [toSlot]: starInstanceId } } };
+    this.apply({ ...this.current, operatorStarLoadouts: nextLoadouts });
+  }
   editOccurrence(occurrenceId: string, update: Partial<Pick<EditableOccurrenceStateV1, "kind" | "name" | "level" | "quality">>): boolean {
     const existing = this.current.importReview.occurrences[occurrenceId];
     if (!existing) throw new WorkspaceDomainError("occurrence_missing", "未找到 editable occurrence");
@@ -102,10 +139,11 @@ export class WorkspaceSession {
     if (level != null && (!Number.isInteger(level) || level < 1 || level > 60)) throw new WorkspaceDomainError("workspace_validation_error", "等级必须是 1–60 的整数或 null");
     const quality = "quality" in update ? update.quality ?? null : existing.quality;
     if (quality != null && !(["橙", "紫", "蓝", "绿", "白"] as Quality[]).includes(quality)) throw new WorkspaceDomainError("workspace_validation_error", "品质无效");
+    this.assertAcceptedOrdinaryOccurrence({ ...existing, completeness: "complete", kind, name: canonical, level, quality });
     const overlapIdentityChanged = kind !== existing.kind || canonical !== existing.name || level !== existing.level;
     let invalidatedDuplicate = false;
     this.applyPostprocess((next) => {
-      next.importReview.occurrences[occurrenceId] = { ...existing, name: canonical, kind, level, quality, completeness: "complete", manualOverride: true, inventoryAction: "keep" };
+      next.importReview.occurrences[occurrenceId] = { ...existing, name: canonical, kind, level, quality, completeness: "complete", manualOverride: true, reviewResolution: "accepted", inventoryAction: "keep" };
       if (overlapIdentityChanged) invalidatedDuplicate = invalidateConfirmedDuplicateRowsForOccurrence(next, occurrenceId);
     });
     return invalidatedDuplicate;
@@ -119,6 +157,7 @@ export class WorkspaceSession {
   resolveOccurrenceReview(occurrenceId: string, resolution: "accepted" | "ignored"): boolean {
     const existing = this.current.importReview.occurrences[occurrenceId];
     if (!existing) throw new WorkspaceDomainError("occurrence_missing", "未找到 editable occurrence");
+    if (resolution === "accepted") this.assertAcceptedOrdinaryOccurrence(existing);
     let invalidatedDuplicate = false;
     this.applyPostprocess((next) => {
       const current = next.importReview.occurrences[occurrenceId]!;
@@ -131,6 +170,17 @@ export class WorkspaceSession {
       if (resolution === "ignored") invalidatedDuplicate = invalidateConfirmedDuplicateRowsForOccurrence(next, occurrenceId);
     });
     return invalidatedDuplicate;
+  }
+  private assertAcceptedOrdinaryOccurrence(occurrence: Pick<EditableOccurrenceStateV1, "completeness" | "kind" | "name" | "level" | "quality">): void {
+    const entry = occurrence.name == null ? undefined : this.catalog.entry(occurrence.name);
+    const level = occurrence.level;
+    if (
+      occurrence.completeness !== "complete" ||
+      (occurrence.kind !== "主星" && occurrence.kind !== "辅星") ||
+      !entry || entry.kind === "经验星石" || entry.kind !== occurrence.kind || entry.name !== occurrence.name ||
+      typeof level !== "number" || !Number.isInteger(level) || level < 1 || level > 60 ||
+      occurrence.quality == null || !(["橙", "紫", "蓝", "绿", "白"] as Quality[]).includes(occurrence.quality)
+    ) throw new WorkspaceDomainError("workspace_validation_error", "接受复核前必须补全合法的大类、标准名称、等级和品质");
   }
   setImagePool(imageId: string, pool: Exclude<ImagePool, "unknown">): void {
     if (!["main", "support", "experience"].includes(pool)) throw new WorkspaceDomainError("workspace_validation_error", "图片池无效");

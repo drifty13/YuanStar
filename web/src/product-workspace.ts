@@ -33,6 +33,9 @@ function record(value: unknown): Record<string, unknown> | null {
 export function backfillLegacyWorkspaceSnapshot(snapshot: WorkspaceStateV1): { snapshot: WorkspaceStateV1; changed: boolean } {
   const defaults = createEmptyWorkspace(snapshot.accountId, snapshot.gameVersion).importReview;
   const source = record((snapshot as unknown as { importReview?: unknown }).importReview);
+  // Shape validation remains centralized in restoreWorkspaceSnapshot; this
+  // compatibility layer only preserves an existing JSON object verbatim.
+  const operatorStarLoadouts = record((snapshot as unknown as { operatorStarLoadouts?: unknown }).operatorStarLoadouts) as WorkspaceStateV1["operatorStarLoadouts"] | null;
   const overlapPairs = record(source?.overlapPairs);
   const review = {
     ...defaults,
@@ -45,13 +48,14 @@ export function backfillLegacyWorkspaceSnapshot(snapshot: WorkspaceStateV1): { s
     occurrences: record(source?.occurrences) ?? defaults.occurrences,
   } as WorkspaceStateV1["importReview"];
   const changed = !source
+    || !operatorStarLoadouts
     || !record(source.imagePools)
     || !Array.isArray(source.confirmedImagePools)
     || !overlapPairs
     || !Array.isArray(source.overlapAudit)
     || !record(source.imageAudit)
     || !record(source.occurrences);
-  return { snapshot: changed ? { ...snapshot, importReview: review } : snapshot, changed };
+  return { snapshot: changed ? { ...snapshot, operatorStarLoadouts: operatorStarLoadouts ?? {}, importReview: review } : snapshot, changed };
 }
 
 /** Lightweight product bridge. It owns no business state beyond the committed record. */

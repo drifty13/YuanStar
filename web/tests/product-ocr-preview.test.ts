@@ -1,5 +1,5 @@
 import { createStarCatalog } from "../src/business/catalog.js";
-import { createEmptyWorkspace } from "../src/business/model.js";
+import { createEmptyWorkspace, WorkspaceDomainError } from "../src/business/model.js";
 import { WorkspaceSession } from "../src/business/session.js";
 import { automaticReconcileResolution, finalizeReconcileDraft, type ReconcileCandidateV1, type ReconcileDraftV1, type ReconcileResolutionV1 } from "../src/business/reconcile.js";
 import {
@@ -13,6 +13,13 @@ import {
 import { buildPersistedProductReview, buildProductReviewImageSummaries, productReviewRowCropRect, productReviewRowKey, selectActiveReviewScrollContainer, type ProductReviewEvidenceV1 } from "../src/product-ocr-review.js";
 
 function expect(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
+function expectWorkspaceValidation(action: () => void, message: string): void {
+  try { action(); } catch (error) {
+    expect(error instanceof WorkspaceDomainError && error.code === "workspace_validation_error", message);
+    return;
+  }
+  throw new Error(message);
+}
 
 const catalog = createStarCatalog([
   { name: "天府", kind: "主星", aliases: [], displayGroup: null, usageTags: [], rawEffectText: null },
@@ -22,6 +29,9 @@ const catalog = createStarCatalog([
 
 function candidate(occurrenceId: string, overrides: Partial<ReconcileCandidateV1> = {}): ReconcileCandidateV1 {
   return { occurrenceId, sourceImageId: "image-1", sourceOrder: 1, row: 0, column: 0, kind: "主星", name: "天府", level: 40, quality: "橙", qualityConfidence: .9, equippedState: "unknown", ...overrides };
+}
+function editableOccurrence(item: ReconcileCandidateV1) {
+  return { ...item, completeness: "complete" as const, nameConfidence: 0, levelConfidence: 0, reviewRequired: true, inventoryAction: "keep" as const, removedFromCurrentInventory: false, manualOverride: false };
 }
 
 function draft(overrides: Partial<ReconcileDraftV1> = {}): ReconcileDraftV1 {
@@ -128,10 +138,28 @@ expect(finalizeReconcileDraft(duplicate, {}, { catalog, gameVersion: "如鸢", c
 expect(finalizeReconcileDraft(duplicate, keepSeparate, { catalog, gameVersion: "如鸢", createStarInstanceId: (() => { let index = 0; return () => `separate-${++index}`; })() }).workspace.inventory.length === 8, "duplicate keep-separate remains whole-row at final commit");
 
 const frozenDraft = JSON.stringify(base);
-const automatic = automaticReconcileResolution(base);
-const automaticFinal = finalizeReconcileDraft(base, automatic, { catalog, gameVersion: "如鸢", createStarInstanceId: () => "automatic" });
+const automaticDraft = draft({ occurrences: [editableOccurrence(candidate("required", { column: 0, name: null, kind: null }))] });
+const automatic = automaticReconcileResolution(automaticDraft);
+const automaticFinal = finalizeReconcileDraft(automaticDraft, automatic, { catalog, gameVersion: "如鸢", createStarInstanceId: () => "automatic" });
 expect(automaticFinal.workspace.inventory.length === 1 && automaticFinal.workspace.inventory[0]!.name === "天府", "automatic reconcile commits complete stars while excluding missing and fragment evidence");
-expect(automatic.ordinary?.required?.action === "exclude" && automatic.ordinary?.clean?.action == null, "automatic reconcile only resolves review records and never forces a clean candidate through review");
+expect(automatic.ordinary?.required?.action === "defer" && automatic.ordinary?.clean?.action == null, "automatic reconcile keeps unresolved complete occurrences pending and never forces a clean candidate through review");
+expect(buildProductReviewCandidates(automaticDraft, automatic, evidence, new Set()).find((item) => item.occurrenceId === "required")?.tier === 1, "automatic unresolved name remains a Tier 1 review candidate");
+expect(automaticFinal.workspace.importReview.occurrences.required!.inventoryAction === "exclude_unresolved" && (automaticFinal.workspace.importReview.imageAudit["image-1"] as any).ordinaryReview[0].auditReason === "auto_unresolved", "automatic unresolved evidence is not persisted as a user exclusion");
+const restoredAutomatic = buildPersistedProductReview(automaticFinal.workspace)!;
+expect(buildProductReviewCandidates(restoredAutomatic.draft, restoredAutomatic.resolution, restoredAutomatic.evidence, new Set()).find((item) => item.occurrenceId === "required")?.tier === 1, "persisted automatic unresolved evidence reloads as pending rather than ignored");
+const unresolvedCore = [
+  candidate("missing-name", { name: null, kind: null }),
+  candidate("missing-level", { level: null }),
+  candidate("missing-quality", { quality: null }),
+];
+const unresolvedCoreDraft = draft({
+  candidates: unresolvedCore,
+  ordinaryGroups: unresolvedCore.map((item) => ({ groupId: `group:${item.occurrenceId}`, occurrenceIds: [item.occurrenceId], primaryOccurrenceId: item.occurrenceId, duplicateRelationIds: [] })),
+  ordinaryReviewItems: unresolvedCore.map((item) => ({ occurrenceId: item.occurrenceId, reasonCodes: ["ordinary_fields_unresolved"], suggested: item })),
+  excludedOrdinaryOccurrences: [],
+});
+const unresolvedCoreAutomatic = automaticReconcileResolution(unresolvedCoreDraft);
+expect(unresolvedCore.every((item) => unresolvedCoreAutomatic.ordinary?.[item.occurrenceId]?.action === "defer") && buildProductReviewCandidates(unresolvedCoreDraft, unresolvedCoreAutomatic, evidence, new Set()).every((item) => item.tier === 1), "unresolved name, level and quality all retain Tier 1 pending semantics");
 expect(JSON.stringify(base) === frozenDraft && base.task.baseRevision === 7, "post-save review helpers do not mutate the reconcile draft or revision");
 
 const persistedWorkspace = createEmptyWorkspace("persisted-account", "代号鸢");
@@ -177,11 +205,15 @@ const reviewSession = new WorkspaceSession(reviewState, catalog, (() => { let in
 const beforeEdit = buildPersistedProductReview(reviewSession.state)!;
 expect(buildProductReviewCandidates(beforeEdit.draft, beforeEdit.resolution, beforeEdit.evidence, new Set()).find((item) => item.occurrenceId === "auto-fragment")?.tier === 2, "automatic fragment stays excluded and tier 2 without pretending to be user ignored");
 expect(buildProductReviewCandidates(beforeEdit.draft, beforeEdit.resolution, beforeEdit.evidence, new Set()).find((item) => item.occurrenceId === "needs-human")?.tier === 1, "missing non-fragment fields remain tier 1");
+expectWorkspaceValidation(() => reviewSession.editOccurrence("needs-human", { name: "武曲" }), "partial manual edit must not mark an unresolved occurrence accepted");
+expect(reviewSession.state.importReview.occurrences["needs-human"]?.reviewResolution == null, "rejected partial manual edit leaves review unresolved");
+expectWorkspaceValidation(() => reviewSession.resolveOccurrenceReview("needs-human", "accepted"), "unresolved occurrence cannot be directly accepted");
+expect(reviewSession.state.importReview.occurrences["needs-human"]?.reviewResolution == null, "rejected direct accept leaves review unresolved");
 reviewSession.editOccurrence("needs-human", { name: "武曲", level: 30, quality: "紫" });
 const editedReview = buildPersistedProductReview(reviewSession.state)!;
-expect(reviewSession.state.inventory.some((item) => item.name === "武曲") && buildProductReviewCandidates(editedReview.draft, editedReview.resolution, editedReview.evidence, new Set()).find((item) => item.occurrenceId === "needs-human")?.tier === 1, "edit immediately updates inventory but remains tier 1 before explicit keep");
+expect(reviewSession.state.inventory.some((item) => item.name === "武曲") && reviewSession.state.importReview.occurrences["needs-human"]?.manualOverride && reviewSession.state.importReview.occurrences["needs-human"]?.reviewResolution === "accepted" && buildProductReviewCandidates(editedReview.draft, editedReview.resolution, editedReview.evidence, new Set()).find((item) => item.occurrenceId === "needs-human")?.tier === 3, "manual edit is the latest accepted decision and immediately restores inventory");
 const f5AfterEdit = buildPersistedProductReview(reviewSession.state)!;
-expect(buildProductReviewCandidates(f5AfterEdit.draft, f5AfterEdit.resolution, f5AfterEdit.evidence, new Set()).find((item) => item.occurrenceId === "needs-human")?.tier === 1, "unkept edit remains tier 1 after F5 reconstruction");
+expect(buildProductReviewCandidates(f5AfterEdit.draft, f5AfterEdit.resolution, f5AfterEdit.evidence, new Set()).find((item) => item.occurrenceId === "needs-human")?.tier === 3, "manual rescue remains accepted after F5 reconstruction");
 reviewSession.resolveOccurrenceReview("needs-human", "accepted");
 const acceptedReview = buildPersistedProductReview(reviewSession.state)!;
 expect(buildProductReviewCandidates(acceptedReview.draft, acceptedReview.resolution, acceptedReview.evidence, new Set()).find((item) => item.occurrenceId === "needs-human")?.tier !== 1, "edit plus keep persists a resolved review");
@@ -189,6 +221,15 @@ reviewSession.undo();
 reviewSession.resolveOccurrenceReview("needs-human", "ignored");
 const ignoredReview = buildPersistedProductReview(reviewSession.state)!;
 expect(!reviewSession.state.inventory.some((item) => item.name === "武曲") && buildProductReviewCandidates(ignoredReview.draft, ignoredReview.resolution, ignoredReview.evidence, new Set()).find((item) => item.occurrenceId === "needs-human")?.tier === 2, "user ignore is persisted separately from automatic fragment exclusion");
+reviewSession.state.importReview.imageAudit.issue = { sourceOrder: 1, ordinaryReview: [{ occurrenceId: "needs-human", reviewReasonCodes: ["ordinary_name_unresolved"], auditReason: "user_excluded" }] } as any;
+reviewSession.editOccurrence("needs-human", { name: "武曲", level: 30, quality: "紫" });
+const rescuedIgnored = buildPersistedProductReview(reviewSession.state)!;
+expect(reviewSession.state.inventory.some((item) => item.name === "武曲") && rescuedIgnored.resolution.ordinary?.["needs-human"]?.action === "accept_suggested" && buildProductReviewCandidates(rescuedIgnored.draft, rescuedIgnored.resolution, rescuedIgnored.evidence, new Set()).find((item) => item.occurrenceId === "needs-human")?.processed !== "ignored", "manual edit rescues a previously ignored occurrence even when its old audit says user_excluded");
+reviewSession.resolveOccurrenceReview("needs-human", "ignored");
+expect(buildProductReviewCandidates(buildPersistedProductReview(reviewSession.state)!.draft, buildPersistedProductReview(reviewSession.state)!.resolution, buildPersistedProductReview(reviewSession.state)!.evidence, new Set()).find((item) => item.occurrenceId === "needs-human")?.processed === "ignored", "a later explicit ignore wins over a prior manual rescue");
+reviewSession.editOccurrence("auto-fragment", { name: "解神", level: 12, quality: "绿" });
+const rescuedFragment = buildPersistedProductReview(reviewSession.state)!;
+expect(reviewSession.state.inventory.some((item) => item.name === "解神") && rescuedFragment.resolution.ordinary?.["auto-fragment"]?.action === "accept_suggested" && buildProductReviewCandidates(rescuedFragment.draft, rescuedFragment.resolution, rescuedFragment.evidence, new Set()).find((item) => item.occurrenceId === "auto-fragment")?.processed !== "ignored", "manual edit rescues an automatically excluded fragment and persists the rescue");
 
 const unresolvedDraft = draft({ candidates: [...left, ...right], ordinaryReviewItems: [], excludedOrdinaryOccurrences: [], ordinaryGroups: [...left, ...right].map((item) => ({ groupId: item.occurrenceId, occurrenceIds: [item.occurrenceId], primaryOccurrenceId: item.occurrenceId, duplicateRelationIds: [] })), duplicateRows: [], overlapReviewItems: [{ rowReviewId: "pending-row", pairId: "pair", leftSourceImageId: "left-image", rightSourceImageId: "right-image", leftRow: 2, rightRow: 3, relationIds: relations.map((item) => item.relationId), leftOccurrenceIds: left.map((item) => item.occurrenceId), rightOccurrenceIds: right.map((item) => item.occurrenceId), reasonCodes: ["overlap_row_requires_review"] }], sourceImages: duplicate.sourceImages });
 const unresolvedCandidates = buildProductReviewCandidates(unresolvedDraft, {}, duplicateEvidence, new Set());

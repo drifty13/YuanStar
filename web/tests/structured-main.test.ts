@@ -1,6 +1,6 @@
 import { candidateFromCircle, classifyCompleteness, isInside } from "../src/structured/card-completeness.js";
 import { buildCardCandidates } from "../src/structured/main-grid.js";
-import { classifyResultStatus, cleanName, parseLevel, resolveLevel, resolveName } from "../src/structured/main-postprocess.js";
+import { MAIN_ALIASES, classifyResultStatus, cleanName, parseLevel, resolveLevel, resolveName } from "../src/structured/main-postprocess.js";
 import { createScreenshotProfile, layoutSpec } from "../src/structured/profiles.js";
 import type { CircleProposal, OcrCandidate, ScreenshotProfile } from "../src/structured/types.js";
 
@@ -78,6 +78,10 @@ expect(classifyResultStatus("partial_bottom", "天府", 60) === "excluded_partia
 expect(cleanName(" 天 府 级 ") === "天府", "name cleaning should match Python");
 const alias = resolveName([{ text: "紫薇", confidence: 0.95, variant: "color" }]);
 expect(alias.normalized === "紫微", "confirmed alias should normalize");
+expect(MAIN_ALIASES["紫薇"] === "紫微" && !("天鉞" in MAIN_ALIASES), "main aliases are built from shared resources without support alias leakage");
+for (const [traditional, canonical] of Object.entries({ "破軍": "破军", "七殺": "七杀", "太陽": "太阳", "廉貞": "廉贞", "巨門": "巨门", "太陰": "太阴", "天機": "天机", "貪狼": "贪狼" })) {
+  expect(resolveName([{ text: traditional, confidence: 0.96, variant: "color" }]).normalized === canonical, `${traditional} should normalize to Simplified canonical ${canonical}`);
+}
 expect(resolveName([{ text: "◆", confidence: 0.99, variant: "color" }]).normalized === null, "pattern text should be rejected");
 equal([parseLevel("1级"), parseLevel("60"), parseLevel("0级"), parseLevel("61级"), parseLevel("-1级")], [1, 60, null, null, null], "level range parsing");
 const levelCandidates: OcrCandidate[] = [{ text: "60级", confidence: 0.96, variant: "color" }, { text: "50", confidence: 0.2, variant: "contrast" }];

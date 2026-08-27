@@ -39,7 +39,8 @@ export interface ReconcileDraftV1 {
   reviewReasonCodes: string[];
 }
 
-export type OrdinaryOccurrenceResolutionV1 = { action: "accept_suggested" } | { action: "exclude" } | { action: "edit"; name: string; level: number; quality: Quality };
+/** `defer` is an explicit system-pending result, never a user exclusion. */
+export type OrdinaryOccurrenceResolutionV1 = { action: "accept_suggested" } | { action: "exclude" } | { action: "defer" } | { action: "edit"; name: string; level: number; quality: Quality };
 export type OverlapResolutionV1 = { action: "merge" | "keep_separate" };
 export interface ReconcileResolutionV1 {
   ordinary?: Record<string, OrdinaryOccurrenceResolutionV1>;
@@ -109,7 +110,7 @@ function candidateProblems(candidate: ReconcileCandidateV1): string[] {
 export function automaticReconcileResolution(draft: ReconcileDraftV1): ReconcileResolutionV1 {
   const ordinary: Record<string, OrdinaryOccurrenceResolutionV1> = {};
   for (const item of draft.ordinaryReviewItems) {
-    ordinary[item.occurrenceId] = candidateProblems(item.suggested).length ? { action: "exclude" } : { action: "accept_suggested" };
+    ordinary[item.occurrenceId] = candidateProblems(item.suggested).length ? { action: "defer" } : { action: "accept_suggested" };
   }
   const overlap: Record<string, OverlapResolutionV1> = {};
   for (const item of draft.overlapReviewItems) overlap[item.rowReviewId] = { action: "keep_separate" };
@@ -311,7 +312,7 @@ function applyOrdinaryResolutions(draft: ReconcileDraftV1, resolution: Reconcile
       if (strictRequired) throw new WorkspaceDomainError("reconcile_review_required", `occurrence ${candidate.occurrenceId} 尚未复核`);
       return candidate;
     }
-    if (choice.action === "exclude") { excluded.add(candidate.occurrenceId); return candidate; }
+    if (choice.action === "exclude" || choice.action === "defer") { excluded.add(candidate.occurrenceId); return candidate; }
     const next = choice.action === "edit" ? { ...candidate, name: catalog.normalize(choice.name), level: choice.level, quality: choice.quality } : candidate;
     const entry = next.name == null ? undefined : catalog.entry(next.name); next.name = entry?.name ?? null; next.kind = entry && entry.kind !== "经验星石" ? entry.kind : null;
     if (candidateProblems(next).length) throw new WorkspaceDomainError("reconcile_resolution_invalid", `occurrence ${candidate.occurrenceId} 的复核值无效`);
@@ -340,7 +341,7 @@ export function reconciledMergedOccurrenceIds(draft: ReconcileDraftV1, resolutio
     const action = resolution.ordinary?.[item.occurrenceId]?.action;
     return action === "edit" || action === "accept_suggested";
   }).map((item) => item.suggested);
-  const candidates = [...draft.candidates, ...rescued].filter((candidate) => resolution.ordinary?.[candidate.occurrenceId]?.action !== "exclude");
+  const candidates = [...draft.candidates, ...rescued].filter((candidate) => !["exclude", "defer"].includes(resolution.ordinary?.[candidate.occurrenceId]?.action ?? ""));
   return new Set(resolvedGroups(draft, candidates, resolution, false).flatMap((group) => group.occurrenceIds.filter((occurrenceId) => occurrenceId !== group.primaryOccurrenceId)));
 }
 function qualityForGroup(members: ReconcileCandidateV1[], manuallyEdited: Set<string>): Quality {
@@ -416,8 +417,10 @@ export function finalizeReconcileDraft(draft: ReconcileDraftV1, resolution: Reco
   const rowResolutionByRelation = new Map([...draft.overlapReviewItems, ...draft.duplicateRows].flatMap((item) => item.relationIds.map((relationId) => [relationId, resolution.overlap?.[item.rowReviewId]?.action ?? null] as const)));
   const occurrenceStates = Object.fromEntries(draft.occurrences.map((state) => {
     const candidate = byId.get(state.occurrenceId);
-    const userExcluded = resolution.ordinary?.[state.occurrenceId]?.action === "exclude";
-    return [state.occurrenceId, candidate ? { ...state, kind: candidate.kind, name: candidate.name, level: candidate.level, quality: candidate.quality, manualOverride: manual.has(state.occurrenceId), inventoryAction: userExcluded ? "exclude_false_box" as const : "keep" as const } : { ...state, inventoryAction: userExcluded ? "exclude_false_box" as const : state.inventoryAction }];
+    const action = resolution.ordinary?.[state.occurrenceId]?.action;
+    const userExcluded = action === "exclude";
+    const automaticallyDeferred = action === "defer";
+    return [state.occurrenceId, candidate ? { ...state, kind: candidate.kind, name: candidate.name, level: candidate.level, quality: candidate.quality, manualOverride: manual.has(state.occurrenceId), inventoryAction: userExcluded ? "exclude_false_box" as const : "keep" as const } : { ...state, inventoryAction: userExcluded ? "exclude_false_box" as const : automaticallyDeferred ? "exclude_unresolved" as const : state.inventoryAction }];
   }));
   const rowAudits = [
     ...draft.duplicateRows.map((item) => ({ item, status: "duplicate" as const })),
@@ -439,7 +442,7 @@ export function finalizeReconcileDraft(draft: ReconcileDraftV1, resolution: Reco
       occurrenceIds: [...item.leftOccurrenceIds, ...item.rightOccurrenceIds].sort(),
     };
   });
-  workspace.importReview = { imagePools: Object.fromEntries(draft.sourceImages.map((image) => [image.sourceImageId, image.confirmedPool ?? image.suggestedPageType])), confirmedImagePools: draft.sourceImages.filter((image) => image.confirmedPool != null).map((image) => image.sourceImageId), overlapPairs, overlapAudit: [...draft.overlapAuditItems.map((item) => ({ ...item, resolution: rowResolutionByRelation.get(item.relationId) ?? null })), ...rowAudits], imageAudit: Object.fromEntries(draft.sourceImages.map((image) => [image.sourceImageId, { sourceOrder: image.sourceOrder, suggestedPageType: image.suggestedPageType, confirmedPool: image.confirmedPool, reviewRequired: image.reviewRequired, warningCodes: image.warningCodes, ordinaryReview: draft.ordinaryReviewItems.filter((item) => item.suggested.sourceImageId === image.sourceImageId).map((item) => ({ occurrenceId: item.occurrenceId, reviewReasonCodes: item.reasonCodes, resolution: resolution.ordinary?.[item.occurrenceId]?.action ?? null, auditReason: resolution.ordinary?.[item.occurrenceId]?.action === "exclude" ? "user_excluded" : null })) }])), occurrences: occurrenceStates };
+  workspace.importReview = { imagePools: Object.fromEntries(draft.sourceImages.map((image) => [image.sourceImageId, image.confirmedPool ?? image.suggestedPageType])), confirmedImagePools: draft.sourceImages.filter((image) => image.confirmedPool != null).map((image) => image.sourceImageId), overlapPairs, overlapAudit: [...draft.overlapAuditItems.map((item) => ({ ...item, resolution: rowResolutionByRelation.get(item.relationId) ?? null })), ...rowAudits], imageAudit: Object.fromEntries(draft.sourceImages.map((image) => [image.sourceImageId, { sourceOrder: image.sourceOrder, suggestedPageType: image.suggestedPageType, confirmedPool: image.confirmedPool, reviewRequired: image.reviewRequired, warningCodes: image.warningCodes, ordinaryReview: draft.ordinaryReviewItems.filter((item) => item.suggested.sourceImageId === image.sourceImageId).map((item) => ({ occurrenceId: item.occurrenceId, reviewReasonCodes: item.reasonCodes, resolution: resolution.ordinary?.[item.occurrenceId]?.action ?? null, auditReason: resolution.ordinary?.[item.occurrenceId]?.action === "exclude" ? "user_excluded" : resolution.ordinary?.[item.occurrenceId]?.action === "defer" ? "auto_unresolved" : null })) }])), occurrences: occurrenceStates };
   return { workspace: createWorkspaceSnapshot(workspace, options.catalog), sourceImageIds: draft.sourceImages.map((image) => image.sourceImageId), starInstanceIds: inventory.map((item) => item.starInstanceId) };
 }
 

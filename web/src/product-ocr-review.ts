@@ -185,9 +185,11 @@ export function buildPersistedProductReview(workspace: WorkspaceStateV1): Persis
     const imageAudit = imageMeta.get(state.sourceImageId);
     const audited = Array.isArray(imageAudit?.ordinaryReview) ? imageAudit?.ordinaryReview as unknown[] : [];
     const audit = audited.map(record).find((item) => item?.occurrenceId === state.occurrenceId);
-    if (state.reviewResolution === "ignored" || audit?.auditReason === "user_excluded") ordinary[state.occurrenceId] = { action: "exclude" };
+    if (state.reviewResolution === "ignored") ordinary[state.occurrenceId] = { action: "exclude" };
     else if (state.reviewResolution === "accepted") ordinary[state.occurrenceId] = { action: "accept_suggested" };
     else if (state.manualOverride && state.name && state.level != null && state.quality) ordinary[state.occurrenceId] = { action: "edit", name: state.name, level: state.level, quality: state.quality };
+    else if (audit?.resolution === "defer" || audit?.auditReason === "auto_unresolved") ordinary[state.occurrenceId] = { action: "defer" };
+    else if (audit?.auditReason === "user_excluded") ordinary[state.occurrenceId] = { action: "exclude" };
   }
   const rowRects: Record<string, Rect> = {};
   for (const sourceImageId of imageIds) {
@@ -221,7 +223,10 @@ export function buildProductReviewImageSummaries(
   Object.entries(resolution.ordinary ?? {}).filter(([, choice]) => choice.action === "exclude").forEach(([occurrenceId]) => excludedIds.add(occurrenceId));
   const activeDuplicateIds = activeDuplicateOccurrenceIdsByImage(draft, resolution);
   return evidence.images.filter((image) => image.pageType !== "experience").map((image) => {
-    const ordinaryPending = draft.ordinaryReviewItems.filter((item) => item.suggested.sourceImageId === image.sourceImageId && resolution.ordinary?.[item.occurrenceId] == null && !completedOccurrenceIds.has(item.occurrenceId)).length;
+    const ordinaryPending = draft.ordinaryReviewItems.filter((item) => {
+      const action = resolution.ordinary?.[item.occurrenceId]?.action;
+      return item.suggested.sourceImageId === image.sourceImageId && action !== "accept_suggested" && action !== "exclude" && !completedOccurrenceIds.has(item.occurrenceId);
+    }).length;
     const overlapPending = draft.overlapReviewItems.filter((item) => item.rightSourceImageId === image.sourceImageId && !resolution.overlap?.[item.rowReviewId]).length;
     const excludedCount = [...excludedIds].filter((occurrenceId) => occurrenceById.get(occurrenceId)?.sourceImageId === image.sourceImageId).length;
     const overlapDuplicateCount = activeDuplicateIds.get(image.sourceImageId)?.size ?? 0;

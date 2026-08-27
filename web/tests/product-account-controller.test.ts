@@ -151,6 +151,10 @@ preReviewWorkspace.inventory = [{ starInstanceId: "pre-review-star", kind: "主�
 delete (preReviewWorkspace as { importReview?: unknown }).importReview;
 const backfilledPreReview = backfillLegacyWorkspaceSnapshot(preReviewWorkspace);
 expect(backfilledPreReview.changed && backfilledPreReview.snapshot.inventory[0]?.starInstanceId === "pre-review-star" && Object.keys(backfilledPreReview.snapshot.importReview.imagePools).length === 0, "older V1 workspace records without OCR review evidence must gain empty review fields without altering inventory");
+const preLoadoutWorkspace = createEmptyWorkspace("pre-loadout-account", "如鸢");
+delete (preLoadoutWorkspace as { operatorStarLoadouts?: unknown }).operatorStarLoadouts;
+const backfilledPreLoadout = backfillLegacyWorkspaceSnapshot(preLoadoutWorkspace);
+expect(backfilledPreLoadout.changed && Object.keys(backfilledPreLoadout.snapshot.operatorStarLoadouts).length === 0 && !("operatorStarLoadouts" in backfilledPreLoadout.snapshot.importReview), "older V1 workspaces must add loadouts at the workspace root, separate from OCR review evidence");
 const legacySwitchAccount: AccountRecord = { accountId: "pre-review-account", displayName: "早期账号", gameVersion: "如鸢", createdAt: "2026-08-15T00:00:00.000Z", updatedAt: "2026-08-15T00:00:00.000Z" };
 const storedPreReviewWorkspace = createEmptyWorkspace(legacySwitchAccount.accountId, legacySwitchAccount.gameVersion);
 delete (storedPreReviewWorkspace as { importReview?: unknown }).importReview;

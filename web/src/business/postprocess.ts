@@ -1,5 +1,6 @@
 import type { StarCatalog } from "./catalog.js";
 import type { EditableOccurrenceStateV1, ImagePool, Quality, StarInstanceV1, StarKind, WorkspaceStateV1 } from "./model.js";
+import { removeMissingStarLoadoutReferences } from "./star-loadout.js";
 import { WorkspaceDomainError } from "./model.js";
 import { createWorkspaceSnapshot } from "./snapshot.js";
 
@@ -203,7 +204,7 @@ export function recalculateWorkspacePostprocess(workspace: WorkspaceStateV1, cat
   const planTargets: Record<string, number> = {};
   for (const item of inventory) { const target = next.planTargets[item.starInstanceId]; if (typeof target === "number" && Number.isInteger(target) && target > item.level && target <= 60) planTargets[item.starInstanceId] = target; }
   const retainedAudits = next.importReview.overlapAudit.filter((value) => asRowAudit(value) == null && !isQualityConflictAudit(value));
-  next.inventory = inventory; next.planTargets = planTargets; next.importReview.overlapAudit = [...retainedAudits, ...audits, ...qualityConflicts] as unknown as WorkspaceStateV1["importReview"]["overlapAudit"]; next.postprocessRevision += 1;
+  next.inventory = inventory; removeMissingStarLoadoutReferences(next); next.planTargets = planTargets; next.importReview.overlapAudit = [...retainedAudits, ...audits, ...qualityConflicts] as unknown as WorkspaceStateV1["importReview"]["overlapAudit"]; next.postprocessRevision += 1;
   return createWorkspaceSnapshot(next, catalog);
 }
 

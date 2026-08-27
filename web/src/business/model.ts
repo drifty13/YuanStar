@@ -28,6 +28,20 @@ export interface StarInstanceV1 {
   manualStatus: string;
 }
 
+/** YuanStar uses main/support terminology throughout its local workspace. */
+export const operatorStarLoadoutSlots = ["main1", "main2", "main3", "support1", "support2", "support3"] as const;
+export type OperatorStarLoadoutSlot = typeof operatorStarLoadoutSlots[number];
+export type OperatorStarLoadoutSlots = Record<OperatorStarLoadoutSlot, string | null>;
+
+/**
+ * A local, account-scoped relationship. Inventory instances never carry an
+ * operator id; the relationship is kept here so the two facts cannot drift.
+ */
+export interface OperatorStarLoadoutV1 {
+  operatorId: string;
+  slots: OperatorStarLoadoutSlots;
+}
+
 /** Lightweight, JSON-safe evidence retained for a later postprocess rebuild without OCR. */
 export interface EditableOccurrenceStateV1 {
   occurrenceId: string;
@@ -44,7 +58,7 @@ export interface EditableOccurrenceStateV1 {
   levelConfidence: number;
   qualityConfidence: number;
   reviewRequired: boolean;
-  inventoryAction: "keep" | "exclude_fragment" | "exclude_false_box";
+  inventoryAction: "keep" | "exclude_fragment" | "exclude_false_box" | "exclude_unresolved";
   /** Business-inventory state only; it never invalidates OCR/overlap evidence. */
   removedFromCurrentInventory: boolean;
   manualOverride: boolean;
@@ -60,6 +74,7 @@ export interface WorkspaceStateV1 {
   gameVersion: GameVersion;
   bag: { currentCount: number | null; capacity: number | null; resolution: JsonValue; manualFields: string[] };
   inventory: StarInstanceV1[];
+  operatorStarLoadouts: Record<string, OperatorStarLoadoutV1>;
   planTargets: Record<string, number>;
   experience: { orange: number | null; purple: number | null; white: number | null; evidence: JsonValue; manualFields: string[] };
   importReview: {
@@ -117,7 +132,7 @@ export function createEmptyWorkspace(accountId: string, gameVersion: GameVersion
   if (!accountId.trim()) throw new WorkspaceDomainError("workspace_validation_error", "accountId 不能为空");
   return {
     schemaVersion: 1, accountId, revision: 0, gameVersion,
-    bag: { currentCount: null, capacity: null, resolution: {}, manualFields: [] }, inventory: [], planTargets: {},
+    bag: { currentCount: null, capacity: null, resolution: {}, manualFields: [] }, inventory: [], operatorStarLoadouts: {}, planTargets: {},
     experience: { orange: null, purple: null, white: null, evidence: {}, manualFields: [] },
     importReview: { imagePools: {}, confirmedImagePools: [], overlapPairs: { main: [], support: [] }, overlapAudit: [], imageAudit: {}, occurrences: {} },
     postprocessRevision: 0,
