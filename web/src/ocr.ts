@@ -298,11 +298,13 @@ function decodeRecognition(output: ort.Tensor, characters: string[]): { text: st
   return { text: text.join(""), confidence: round(confidence) };
 }
 
-function prepareRecognitionCanvas(canvas: RuntimeCanvas): ort.Tensor {
+const STRUCTURED_NAME_LEVEL_RECOGNITION_MIN_WIDTH = 160;
+
+function prepareRecognitionCanvas(canvas: RuntimeCanvas, minimumWidth = 320): ort.Tensor {
   const ratio = canvas.width / Math.max(1, canvas.height);
   const targetHeight = 48;
   const resizedWidth = Math.max(1, Math.min(960, Math.ceil(targetHeight * ratio)));
-  const targetWidth = Math.max(320, resizedWidth);
+  const targetWidth = Math.max(minimumWidth, resizedWidth);
   const resized = canvasFor(resizedWidth, targetHeight);
   const context = resized.getContext("2d", { willReadFrequently: true });
   if (!context) throw new Error("浏览器无法创建 ROI 识别 Canvas");
@@ -392,12 +394,13 @@ export async function recognizeRectVariants(
 
 export async function recognizePreparedRectVariants(
   variants: PreparedRoiVariant[],
+  minimumWidth = 320,
 ): Promise<Array<{ text: string; confidence: number; variant: string }>> {
   if (!models) throw new Error("请先加载并验证模型");
   const results: Array<{ text: string; confidence: number; variant: string }> = [];
   for (const item of variants) {
     recognitionCallCount += 1;
-    const tensor = prepareRecognitionCanvas(item.canvas);
+    const tensor = prepareRecognitionCanvas(item.canvas, minimumWidth);
     const output = await models.recognition.run({ [models.recognition.inputNames[0]!]: tensor });
     const decoded = decodeRecognition(output[models.recognition.outputNames[0]!]!, models.characters);
     results.push({ ...decoded, variant: item.variant });
@@ -413,12 +416,17 @@ export async function recognizePreparedRectVariantsWithFallback(
   variants: PreparedRoiVariant[],
   canAcceptFirst: (candidate: { text: string; confidence: number; variant: string }) => boolean,
   forceFullVariants = false,
+  canAcceptFirstTwo?: (
+    first: { text: string; confidence: number; variant: string },
+    second: { text: string; confidence: number; variant: string },
+  ) => boolean,
 ): Promise<Array<{ text: string; confidence: number; variant: string }>> {
   return runProgressiveVariantFallback(
     variants,
-    recognizePreparedRectVariants,
+    (prepared) => recognizePreparedRectVariants(prepared, STRUCTURED_NAME_LEVEL_RECOGNITION_MIN_WIDTH),
     canAcceptFirst,
     forceFullVariants,
+    canAcceptFirstTwo,
   );
 }
 

@@ -8,7 +8,7 @@
     {"name": "七杀", "kind": "主星", "aliases": [], "display_group": null, "usage_tags": [], "raw_effect_text": null},
     {"name": "破军", "kind": "主星", "aliases": [], "display_group": null, "usage_tags": [], "raw_effect_text": null},
     {"name": "贪狼", "kind": "主星", "aliases": [], "display_group": null, "usage_tags": [], "raw_effect_text": null},
-    {"name": "紫微", "kind": "主星", "aliases": ["紫薇"], "display_group": null, "usage_tags": [], "raw_effect_text": null},
+    {"name": "紫微", "kind": "主星", "aliases": [], "display_group": null, "usage_tags": [], "raw_effect_text": null},
     {"name": "天同", "kind": "主星", "aliases": [], "display_group": null, "usage_tags": [], "raw_effect_text": null},
     {"name": "太阴", "kind": "主星", "aliases": [], "display_group": null, "usage_tags": [], "raw_effect_text": null},
     {"name": "天机", "kind": "主星", "aliases": [], "display_group": null, "usage_tags": [], "raw_effect_text": null},
@@ -38,7 +38,7 @@
     {"name": "八座", "kind": "辅星", "aliases": [], "display_group": null, "usage_tags": ["地属性抗性", "水属性抗性"], "raw_effect_text": null},
     {"name": "恩光", "kind": "辅星", "aliases": [], "display_group": null, "usage_tags": ["风属性抗性", "火属性抗性"], "raw_effect_text": null},
     {"name": "天贵", "kind": "辅星", "aliases": [], "display_group": null, "usage_tags": ["阴属性抗性", "阳属性抗性"], "raw_effect_text": null},
-    {"name": "紫星曜", "kind": "经验星石", "aliases": ["紫星耀"], "display_group": null, "usage_tags": [], "raw_effect_text": null, "experience_per_item": 500},
-    {"name": "白星曜", "kind": "经验星石", "aliases": ["白星耀"], "display_group": null, "usage_tags": [], "raw_effect_text": null, "experience_per_item": 100}
+    {"name": "紫星曜", "kind": "经验星石", "aliases": [], "display_group": null, "usage_tags": [], "raw_effect_text": null, "experience_per_item": 500},
+    {"name": "白星曜", "kind": "经验星石", "aliases": [], "display_group": null, "usage_tags": [], "raw_effect_text": null, "experience_per_item": 100}
   ]
 }

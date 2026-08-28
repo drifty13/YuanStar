@@ -3,6 +3,8 @@ import { buildCardCandidates } from "../src/structured/main-grid.js";
 import { MAIN_ALIASES, classifyResultStatus, cleanName, parseLevel, resolveLevel, resolveName } from "../src/structured/main-postprocess.js";
 import { createScreenshotProfile, layoutSpec } from "../src/structured/profiles.js";
 import type { CircleProposal, OcrCandidate, ScreenshotProfile } from "../src/structured/types.js";
+import aliasesResource from "../../data/ocr_aliases.json" with { type: "json" };
+import catalogResource from "../../data/star_catalog.json" with { type: "json" };
 
 function expect(condition: unknown, message: string): asserts condition { if (!condition) throw new Error(message); }
 function equal<T>(actual: T, expected: T, message: string): void { expect(JSON.stringify(actual) === JSON.stringify(expected), `${message}: ${JSON.stringify(actual)} !== ${JSON.stringify(expected)}`); }
@@ -76,14 +78,21 @@ expect(classifyResultStatus("partial_bottom", "天府", 60) === "excluded_partia
 
 // 主星别名、图案文本过滤与等级 1-60。
 expect(cleanName(" 天 府 级 ") === "天府", "name cleaning should match Python");
-const alias = resolveName([{ text: "紫薇", confidence: 0.95, variant: "color" }]);
-expect(alias.normalized === "紫微", "confirmed alias should normalize");
-expect(MAIN_ALIASES["紫薇"] === "紫微" && !("天鉞" in MAIN_ALIASES), "main aliases are built from shared resources without support alias leakage");
+const alias = resolveName([{ text: "天機", confidence: 0.95, variant: "color" }]);
+expect(alias.normalized === "天机", "legitimate Traditional alias should normalize");
+expect(MAIN_ALIASES["天機"] === "天机" && !("天鉞" in MAIN_ALIASES), "main aliases are built from shared resources without support alias leakage");
+for (const typo of ["紫薇", "紫星耀", "白星耀", "星耀"] as const) {
+  expect(!(typo in aliasesResource), `${typo} must not remain in the shared OCR alias resource`);
+}
+for (const entry of catalogResource.stars) {
+  expect(!entry.aliases?.some((alias) => ["紫薇", "紫星耀", "白星耀", "星耀"].includes(alias)), `${entry.name} must not retain a historical typo alias`);
+}
+expect(resolveName([{ text: "紫薇", confidence: 0.95, variant: "color" }]).normalized === null, "historical typo alias must require review");
 for (const [traditional, canonical] of Object.entries({ "破軍": "破军", "七殺": "七杀", "太陽": "太阳", "廉貞": "廉贞", "巨門": "巨门", "太陰": "太阴", "天機": "天机", "貪狼": "贪狼" })) {
   expect(resolveName([{ text: traditional, confidence: 0.96, variant: "color" }]).normalized === canonical, `${traditional} should normalize to Simplified canonical ${canonical}`);
 }
 expect(resolveName([{ text: "◆", confidence: 0.99, variant: "color" }]).normalized === null, "pattern text should be rejected");
-equal([parseLevel("1级"), parseLevel("60"), parseLevel("0级"), parseLevel("61级"), parseLevel("-1级")], [1, 60, null, null, null], "level range parsing");
+equal([parseLevel("1级"), parseLevel("60級"), parseLevel("60"), parseLevel("0级"), parseLevel("61级"), parseLevel("-1级")], [1, 60, 60, null, null, null], "level range parsing");
 const levelCandidates: OcrCandidate[] = [{ text: "60级", confidence: 0.96, variant: "color" }, { text: "50", confidence: 0.2, variant: "contrast" }];
 expect(resolveLevel(levelCandidates).level === 60, "high-confidence complete level should win weighted consensus");
 

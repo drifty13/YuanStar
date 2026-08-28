@@ -7,7 +7,7 @@ import { applyHierarchicalNameSandwich, applyHierarchicalOrder, recognizeEquippe
 import { recognizeQuality } from "./quality-postprocess.js";
 import type { OcrCandidate, StructuredMainOutput } from "./types.js";
 import { imageDataForBitmap } from "./image-canvas-runtime.js";
-import { canAcceptStrictLevelColorCandidate, canAcceptStrictNameColorCandidate } from "./variant-fallback.js";
+import { canAcceptStrictLevelColorCandidate, canAcceptStrictLevelFirstTwoAgreement, canAcceptStrictNameColorCandidate } from "./variant-fallback.js";
 
 type NameResolver = (candidates: OcrCandidate[]) => NameResolution;
 type PreparedStructuredImage = {
@@ -18,6 +18,7 @@ type PreparedStructuredImage = {
 export interface StructuredStarOptions {
   imageId?: string;
   pageType?: "main" | "support";
+  exactNameAliases?: Readonly<Record<string, string>>;
   /** Reuses routing-owned image state; this pipeline never closes that bitmap. */
   prepared?: PreparedStructuredImage;
   /** Shadow-audit reference mode: preserve the historical full-three recognition path. */
@@ -71,7 +72,7 @@ export async function runStructuredStar(file: File, resolveName: NameResolver, o
     const nameStart = performance.now();
     const nameCandidates = await recognizePreparedRectVariantsWithFallback(
       preparedName,
-      (candidate) => canAcceptStrictNameColorCandidate(candidate, resolveName),
+      (candidate) => canAcceptStrictNameColorCandidate(candidate, resolveName, options.exactNameAliases),
       options.forceFullVariants === true,
     );
     nameRecognitionMs += performance.now() - nameStart;
@@ -80,6 +81,7 @@ export async function runStructuredStar(file: File, resolveName: NameResolver, o
       preparedLevel,
       canAcceptStrictLevelColorCandidate,
       options.forceFullVariants === true,
+      canAcceptStrictLevelFirstTwoAgreement,
     );
     levelRecognitionMs += performance.now() - levelStart;
     const postStart = performance.now();

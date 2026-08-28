@@ -197,13 +197,13 @@ equal(isOcrVariantAuditEnabled("?ocrPerf=1"), false, "variant audit must remain 
 equal(isOcrVariantAuditEnabled("?ocrPerf=1&ocrVariantAudit=1"), true, "variant audit must require both URL flags");
 const nameAudit = createNameVariantAuditRecord({
   imageId: "audit-image", fileName: "audit.png", pageType: "main", row: 0, column: 0, cardId: "card-1",
-  candidates: [{ variant: "color", text: "紫薇", confidence: 0.93 }, { variant: "contrast", text: "紫微", confidence: 0.91 }, { variant: "otsu", text: "天府", confidence: 0.99 }],
+  candidates: [{ variant: "color", text: "天機", confidence: 0.93 }, { variant: "contrast", text: "天机", confidence: 0.91 }, { variant: "otsu", text: "天府", confidence: 0.99 }],
   resolveName: resolveMainName,
   pipelineDirectName: "天府",
   pipelineEffectiveName: "天府",
 });
-equal(nameAudit.v1.normalized, "紫微", "one-variant name shadow resolver must use the first candidate only");
-equal(nameAudit.v12.normalized, "紫微", "two-variant name shadow resolver must preserve the first-two resolver result");
+equal(nameAudit.v1.normalized, "天机", "one-variant name shadow resolver must use the first candidate only");
+equal(nameAudit.v12.normalized, "天机", "two-variant name shadow resolver must preserve the first-two resolver result");
 equal(nameAudit.official.normalized, "天府", "all-three name shadow resolver must retain the official resolver result");
 equal(nameAudit.v3ChangesFinalDecision, true, "name mismatch must record a third-variant final-decision change");
 const levelAudit = createLevelVariantAuditRecord({

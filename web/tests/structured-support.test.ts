@@ -29,10 +29,12 @@ for (const [traditional, canonical] of Object.entries(SUPPORT_ALIASES)) {
 }
 expect(resolveSupportName([{ text: "未知", confidence: 0.99, variant: "color" }]).normalized === null, "unknown support name should require review");
 
-// 生产真实 aliases 只能进入各自目录，不能污染辅星或主星。
-expect(resolveMainName([{ text: "紫薇", confidence: 0.95, variant: "color" }]).normalized === "紫微", "main production alias should remain valid");
-expect(resolveSupportName([{ text: "紫薇", confidence: 0.95, variant: "color" }]).normalized === null, "main alias must not enter support");
-expect(resolveSupportName([{ text: "紫星耀", confidence: 0.95, variant: "color" }]).normalized === null, "experience alias must not enter support");
+// 生产真实 aliases 只能进入各自目录，历史 typo 不得被任一目录接受。
+expect(resolveMainName([{ text: "天機", confidence: 0.95, variant: "color" }]).normalized === "天机", "main Traditional alias should remain valid");
+for (const typo of ["紫薇", "紫星耀", "白星耀", "星耀"] as const) {
+  expect(resolveMainName([{ text: typo, confidence: 0.95, variant: "color" }]).normalized === null, `${typo} must not enter main`);
+  expect(resolveSupportName([{ text: typo, confidence: 0.95, variant: "color" }]).normalized === null, `${typo} must not enter support`);
+}
 expect(resolveMainName([{ text: "三台", confidence: 0.95, variant: "color" }]).normalized === null, "support name must not enter main");
 
 equal([parseLevel("1级"), parseLevel("60"), parseLevel("0"), parseLevel("61")], [1, 60, null, null], "support level range must stay 1-60");
