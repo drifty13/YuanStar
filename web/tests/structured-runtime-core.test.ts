@@ -17,7 +17,9 @@ expect(createOccurrenceId("image-a", "experience", { ordinal: 0 }) === createOcc
 
 equal(routeTabOcrCandidates([{ text: "主星", confidence: 0.9, variant: "color" }]).pageType, "main", "主星 tab OCR must route main");
 equal(routeTabOcrCandidates([{ text: "辅星", confidence: 0.9, variant: "color" }]).pageType, "support", "辅星 tab OCR must route support");
+equal(routeTabOcrCandidates([{ text: "輔星", confidence: 0.9, variant: "color" }]).pageType, "support", "輔星 tab OCR must route support");
 equal(routeTabOcrCandidates([{ text: "经验星石", confidence: 0.9, variant: "color" }]).pageType, "experience", "经验 tab OCR must route experience");
+equal(routeTabOcrCandidates([{ text: "經驗星石", confidence: 0.9, variant: "color" }]).pageType, "experience", "經驗星石 tab OCR must route experience");
 equal(routeTabOcrCandidates([{ text: "天府", confidence: 0.99, variant: "color" }]).pageType, "unknown", "star-name OCR must not route an unknown page");
 equal(routeTabOcrCandidates([]).pageType, "unknown", "insufficient tab evidence must stay unknown");
 equal(routeTabOcrCandidates([{ text: "主星", confidence: 0.9, variant: "color" }, { text: "辅星", confidence: 0.9, variant: "contrast" }]).pageType, "unknown", "conflicting tab OCR must stay unknown");

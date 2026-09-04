@@ -1,3 +1,6 @@
+/* Stable caption row for WebKit button-grid sizing. */
+:root .thumbnail-preview { grid-template-rows: 72px minmax(36px, auto); appearance: none; -webkit-appearance: none; }:root .thumbnail-caption { box-sizing: border-box; min-height: 36px; background: var(--bg-surface); }
+
 :root {
   --bg-page: #f7f4ef;
   --bg-surface: #fffefc;

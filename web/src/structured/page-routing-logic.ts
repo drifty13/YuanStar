@@ -64,8 +64,8 @@ export function toPageClassificationV1(
 
 export const PAGE_TOKENS: Readonly<Record<Exclude<PageType, "unknown">, readonly string[]>> = {
   main: ["主星"],
-  support: ["辅星"],
-  experience: ["经验星石", "紫星曜", "白星曜"],
+  support: ["辅星", "輔星"],
+  experience: ["经验星石", "經驗星石", "紫星曜", "白星曜"],
 };
 
 export function routeTabOcrCandidates(candidates: readonly { text: string; confidence: number; variant: string }[]): {
