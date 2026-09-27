@@ -71,8 +71,9 @@ class FakeTransaction {
   private keyFor(name: string, value: unknown, explicitKey?: unknown): string {
     if (name === "meta") return JSON.stringify(explicitKey);
     const record = value as Record<string, unknown>;
-    if (name === "accounts" || name === "workspaces") return JSON.stringify(record.accountId);
+    if (name === "accounts" || name === "workspaces" || name === "importDrafts") return JSON.stringify(record.accountId);
     if (name === "images") return JSON.stringify([record.accountId, record.imageId]);
+    if (name === "importDraftImages") return JSON.stringify([record.accountId, record.sourceImageId]);
     if (name === "restorePoints") return JSON.stringify([record.accountId, record.restorePointId]);
     return JSON.stringify([record.accountId, record.restorePointId, record.imageId]);
   }
@@ -99,7 +100,7 @@ class FakeStore {
 }
 
 class FakeDatabase {
-  stores = new Map(["meta", "accounts", "workspaces", "images", "restorePoints", "restorePointImages"].map((name) => [name, new Map<string, unknown>()]));
+  stores = new Map(["meta", "accounts", "workspaces", "images", "restorePoints", "restorePointImages", "importDrafts", "importDraftImages"].map((name) => [name, new Map<string, unknown>()]));
   transaction(): FakeTransaction { return new FakeTransaction(this); }
 }
 
@@ -130,8 +131,15 @@ expect(duplicateRejected && !await getAccount(db, "duplicate"), "invalid duplica
 const bRecord = await getWorkspace(db, accountB.accountId);
 expect(bRecord, "account B workspace must remain available before deletion");
 await commitWorkspaceTransaction(db, { accountId: accountB.accountId, expectedRevision: bRecord.revision, nextSnapshot: bRecord.snapshot, imageUpserts: [{ imageId: "b-image", blob: new Blob(["b"]), filename: "b.png", mimeType: "image/png", width: 1, height: 1, createdAt: now }], optionalRestorePoint: { restorePointId: "b-restore", reason: "test", createdAt: now, imageIds: [], images: [] } });
+const persisted = (db as unknown as FakeDatabase).stores;
+for (const owner of [accountA.accountId, accountB.accountId]) {
+  persisted.get("importDrafts")!.set(JSON.stringify(owner), { accountId: owner, schemaVersion: 1, imageOrder: ["draft-image"] });
+  persisted.get("importDraftImages")!.set(JSON.stringify([owner, "draft-image"]), { accountId: owner, sourceImageId: "draft-image", blob: new Blob([owner]) });
+}
 await deleteAccountData(db, accountB.accountId);
 expect(!await getAccount(db, accountB.accountId) && !await getWorkspace(db, accountB.accountId) && (await listImagesForAccount(db, accountB.accountId)).length === 0 && (await listRestorePoints(db, accountB.accountId)).length === 0, "deleting B must remove only B-owned persisted business data");
+const afterDelete = (db as unknown as FakeDatabase).stores;
+expect(!afterDelete.get("importDrafts")?.has(JSON.stringify(accountB.accountId)) && !afterDelete.get("importDraftImages")?.has(JSON.stringify([accountB.accountId, "draft-image"])) && afterDelete.get("importDrafts")?.has(JSON.stringify(accountA.accountId)) && afterDelete.get("importDraftImages")?.has(JSON.stringify([accountA.accountId, "draft-image"])), "deleting B must cascade draft metadata and Blob without touching A");
 expect((await getWorkspace(db, accountA.accountId))?.revision === writtenA.revision + 1 && (await getWorkspace(db, accountA.accountId))?.snapshot.bag.currentCount === 7, "deleting B must not alter A data");
 
 console.log("account persistence checks passed");

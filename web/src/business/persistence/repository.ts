@@ -3,8 +3,9 @@ import { WorkspaceDomainError } from "../model.js";
 import { asJsonExample } from "../snapshot.js";
 
 export const PRODUCTION_DB_NAME = "yuanstar-static";
-export const PRODUCTION_DB_VERSION = 1;
-export const PRODUCTION_STORES = ["meta", "accounts", "workspaces", "images", "restorePoints", "restorePointImages"] as const;
+export const PRODUCTION_DB_VERSION = 2;
+const BUSINESS_STORES = ["meta", "accounts", "workspaces", "images", "restorePoints", "restorePointImages"] as const;
+export const PRODUCTION_STORES = [...BUSINESS_STORES, "importDrafts", "importDraftImages"] as const;
 export type ProductionStore = typeof PRODUCTION_STORES[number];
 
 export interface AccountRecord { accountId: string; displayName: string; gameVersion: GameVersion; createdAt: string; updatedAt: string; }
@@ -48,8 +49,15 @@ export async function openDatabase(name = PRODUCTION_DB_NAME): Promise<IDBDataba
       if (!db.objectStoreNames.contains("images")) db.createObjectStore("images", { keyPath: ["accountId", "imageId"] });
       if (!db.objectStoreNames.contains("restorePoints")) db.createObjectStore("restorePoints", { keyPath: ["accountId", "restorePointId"] });
       if (!db.objectStoreNames.contains("restorePointImages")) db.createObjectStore("restorePointImages", { keyPath: ["accountId", "restorePointId", "imageId"] });
+      if (!db.objectStoreNames.contains("importDrafts")) db.createObjectStore("importDrafts", { keyPath: "accountId" });
+      if (!db.objectStoreNames.contains("importDraftImages")) db.createObjectStore("importDraftImages", { keyPath: ["accountId", "sourceImageId"] });
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onblocked = () => console.warn(`IndexedDB ${name} v${PRODUCTION_DB_VERSION} 升级被其他打开的页面阻塞，请关闭旧页面后重试。`);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     request.onerror = () => reject(request.error ?? new Error("无法打开 yuanstar-static"));
   });
 }
@@ -140,28 +148,32 @@ export async function updateAccountMetadata(db: IDBDatabase, input: { accountId:
 
 /** Deletes exactly one account and every persisted record that is keyed by it. */
 export async function deleteAccountData(db: IDBDatabase, accountId: string): Promise<void> {
-  const transaction = db.transaction(["accounts", "workspaces", "images", "restorePoints", "restorePointImages"], "readwrite");
+  const transaction = db.transaction(["accounts", "workspaces", "images", "restorePoints", "restorePointImages", "importDrafts", "importDraftImages"], "readwrite");
   const done = transactionComplete(transaction);
   const images = transaction.objectStore("images");
   const restorePoints = transaction.objectStore("restorePoints");
   const restorePointImages = transaction.objectStore("restorePointImages");
-  const [accountImages, accountRestorePoints, accountRestorePointImages] = await Promise.all([
+  const importDraftImages = transaction.objectStore("importDraftImages");
+  const [accountImages, accountRestorePoints, accountRestorePointImages, accountDraftImages] = await Promise.all([
     requestResult<ImageRecord[]>(images.getAll()),
     requestResult<RestorePointRecord[]>(restorePoints.getAll()),
     requestResult<RestorePointImageRecord[]>(restorePointImages.getAll()),
+    requestResult<Array<{ accountId: string; sourceImageId: string }>>(importDraftImages.getAll()),
   ]);
   transaction.objectStore("accounts").delete(accountId);
   transaction.objectStore("workspaces").delete(accountId);
+  transaction.objectStore("importDrafts").delete(accountId);
   accountImages.filter((item) => item.accountId === accountId).forEach((item) => images.delete([item.accountId, item.imageId]));
   accountRestorePoints.filter((item) => item.accountId === accountId).forEach((item) => restorePoints.delete([item.accountId, item.restorePointId]));
   accountRestorePointImages.filter((item) => item.accountId === accountId).forEach((item) => restorePointImages.delete([item.accountId, item.restorePointId, item.imageId]));
+  accountDraftImages.filter((item) => item.accountId === accountId).forEach((item) => importDraftImages.delete([item.accountId, item.sourceImageId]));
   await done;
 }
 
 export async function commitWorkspaceTransaction(db: IDBDatabase, input: CommitWorkspaceTransactionInput): Promise<WorkspaceRecord> {
   if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 0) throw new WorkspaceDomainError("workspace_validation_error", "expectedRevision 必须为非负整数");
   if (input.nextSnapshot.accountId !== input.accountId) throw new WorkspaceDomainError("workspace_validation_error", "workspace accountId 不匹配");
-  const transaction = db.transaction(PRODUCTION_STORES, "readwrite");
+  const transaction = db.transaction(BUSINESS_STORES, "readwrite");
   const done = transactionComplete(transaction);
   const workspaceStore = transaction.objectStore("workspaces");
   const current = await requestResult<WorkspaceRecord | undefined>(workspaceStore.get(input.accountId));

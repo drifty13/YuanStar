@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Import Draft IndexedDB migration check</title>
+<pre id="result" data-status="running">running</pre>
+<script type="module">
+import { openDatabase, PRODUCTION_STORES } from "/src/business/persistence/repository.ts";
+import { createEmptyWorkspace } from "/src/business/model.ts";
+
+const output = document.querySelector("#result");
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+const result = (request) => new Promise((resolve, reject) => {
+  request.onsuccess = () => resolve(request.result);
+  request.onerror = () => reject(request.error);
+});
+const complete = (tx) => new Promise((resolve, reject) => {
+  tx.oncomplete = () => resolve();
+  tx.onabort = () => reject(tx.error);
+  tx.onerror = () => reject(tx.error);
+});
+const oldStores = ["meta", "accounts", "workspaces", "images", "restorePoints", "restorePointImages"];
+const bytes = [0, 127, 128, 255];
+const dbName = "yuanstar-p1-browser-migration";
+const emptyName = "yuanstar-p1-empty-schema";
+const blockedName = "yuanstar-p1-blocked-upgrade";
+const testDbNames = [dbName, emptyName, blockedName];
+const clearTestDatabases = async () => {
+  for (const name of testDbNames) {
+    check(name.startsWith("yuanstar-p1-"), `refusing to delete non-test database: ${name}`);
+    await new Promise((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(name);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+      request.onblocked = () => reject(new Error(`test database deletion blocked: ${name}`));
+    });
+  }
+};
+const accountId = "migration-account";
+const now = "2026-09-26T00:00:00.000Z";
+const account = { accountId, displayName: "迁移验证账号", gameVersion: "如鸢", createdAt: now, updatedAt: now };
+const snapshot = createEmptyWorkspace(accountId, "如鸢");
+const storeKeys = {
+  meta: null, accounts: "accountId", workspaces: "accountId",
+  images: ["accountId", "imageId"],
+  restorePoints: ["accountId", "restorePointId"],
+  restorePointImages: ["accountId", "restorePointId", "imageId"],
+};
+const checks = [];
+let empty;
+let legacy;
+let upgraded;
+let blockedLegacy;
+let blockedUpgrade;
+let failure;
+
+try {
+  await clearTestDatabases();
+  empty = await openDatabase(emptyName);
+  check(empty.version === 2 && PRODUCTION_STORES.every((name) => empty.objectStoreNames.contains(name)), "fresh v2 schema");
+  check(empty.transaction("importDrafts").objectStore("importDrafts").keyPath === "accountId", "draft key path");
+  check(JSON.stringify(empty.transaction("importDraftImages").objectStore("importDraftImages").keyPath) === JSON.stringify(["accountId", "sourceImageId"]), "draft image key path");
+  empty.close();
+  checks.push("fresh v2 schema");
+
+  const legacyRequest = indexedDB.open(dbName, 1);
+  legacyRequest.onupgradeneeded = () => {
+    for (const name of oldStores) {
+      const keyPath = storeKeys[name];
+      legacyRequest.result.createObjectStore(name, keyPath === null ? undefined : { keyPath });
+    }
+  };
+  legacy = await result(legacyRequest);
+  const write = legacy.transaction(oldStores, "readwrite");
+  const written = complete(write);
+  write.objectStore("meta").put("legacy-meta", "marker");
+  write.objectStore("accounts").put(account);
+  write.objectStore("workspaces").put({ accountId, revision: 1, schemaVersion: 1, snapshot, updatedAt: now });
+  write.objectStore("images").put({ accountId, imageId: "source", blob: new Blob([new Uint8Array(bytes)], { type: "image/png" }), filename: "source.png", mimeType: "image/png", width: 1, height: 1, createdAt: now });
+  write.objectStore("restorePoints").put({ accountId, restorePointId: "point", reason: "migration", createdAt: now, workspaceRevision: 1, snapshot, imageIds: ["source"] });
+  write.objectStore("restorePointImages").put({ accountId, restorePointId: "point", imageId: "source", blob: new Blob([new Uint8Array(bytes)], { type: "image/png" }), metadata: { filename: "source.png" } });
+  await written;
+  checks.push("seeded v1 records in six stores");
+  legacy.close();
+  upgraded = await openDatabase(dbName);
+  checks.push("closed v1 connection, then upgraded same database to v2");
+
+  check(upgraded.version === 2 && PRODUCTION_STORES.every((name) => upgraded.objectStoreNames.contains(name)), "v2 stores after upgrade");
+  for (const name of oldStores) {
+    const actual = upgraded.transaction(name).objectStore(name).keyPath;
+    check(JSON.stringify(actual) === JSON.stringify(storeKeys[name]), `unchanged ${name} key path`);
+  }
+  checks.push("old six store key paths unchanged; new two stores present");
+
+  const read = upgraded.transaction(oldStores, "readonly");
+  const legacyMeta = await result(read.objectStore("meta").get("marker"));
+  const oldAccount = await result(read.objectStore("accounts").get(accountId));
+  const oldWorkspace = await result(read.objectStore("workspaces").get(accountId));
+  const oldImage = await result(read.objectStore("images").get([accountId, "source"]));
+  const oldPoint = await result(read.objectStore("restorePoints").get([accountId, "point"]));
+  const oldPointImage = await result(read.objectStore("restorePointImages").get([accountId, "point", "source"]));
+  check(legacyMeta === "legacy-meta" && oldAccount?.displayName === account.displayName, "meta/account retained");
+  check(oldWorkspace?.snapshot?.accountId === accountId && oldWorkspace?.revision === 1, "workspace retained");
+  check(oldPoint?.reason === "migration" && oldPoint?.imageIds?.[0] === "source", "restore point retained");
+  check(JSON.stringify([...new Uint8Array(await oldImage.blob.arrayBuffer())]) === JSON.stringify(bytes), "source image bytes retained");
+  check(JSON.stringify([...new Uint8Array(await oldPointImage.blob.arrayBuffer())]) === JSON.stringify(bytes), "restore point image bytes retained");
+  checks.push("meta, account, workspace, source image, restore point and restore image preserved with Blob bytes");
+
+  const obsoleteRequest = indexedDB.open(dbName, 1);
+  const oldError = await new Promise((resolve) => {
+    obsoleteRequest.onsuccess = () => { obsoleteRequest.result.close(); resolve("unexpected success"); };
+    obsoleteRequest.onerror = () => resolve(obsoleteRequest.error?.name);
+  });
+  check(oldError === "VersionError", `old v1 open returned ${oldError}`);
+  checks.push("old v1 open rejected with VersionError");
+
+  const blockedLegacyRequest = indexedDB.open(blockedName, 1);
+  blockedLegacyRequest.onupgradeneeded = () => {
+    for (const name of oldStores) {
+      const keyPath = storeKeys[name];
+      blockedLegacyRequest.result.createObjectStore(name, keyPath === null ? undefined : { keyPath });
+    }
+  };
+  blockedLegacy = await result(blockedLegacyRequest);
+  let versionchangeCount = 0;
+  // This test-owned v1 connection closes itself; it does not model a historical v1 build.
+  blockedLegacy.onversionchange = () => {
+    versionchangeCount++;
+    setTimeout(() => blockedLegacy.close(), 150);
+  };
+  const blockedWarnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => { blockedWarnings.push(args.join(" ")); originalWarn(...args); };
+  try { blockedUpgrade = await openDatabase(blockedName); }
+  finally { console.warn = originalWarn; }
+  check(versionchangeCount === 1 && blockedWarnings.some((message) => message.includes("阻塞")) && blockedUpgrade.version === 2, "blocked signal and old connection close");
+  blockedUpgrade.close();
+  checks.push("test-owned v1 connection received versionchange; blocked signal observed; upgrade resumed");
+
+  check(typeof upgraded.onversionchange === "function", "v2 connection has versionchange handler");
+  upgraded.onversionchange(new Event("versionchange"));
+  let closed = false;
+  try { upgraded.transaction("accounts"); } catch (error) { closed = error?.name === "InvalidStateError"; }
+  check(closed, "v2 connection closes when its versionchange handler runs");
+  checks.push("v2 handler closes its connection (handler invoked directly without creating v3)");
+
+} catch (error) {
+  failure = error;
+} finally {
+  for (const db of [empty, legacy, upgraded, blockedLegacy, blockedUpgrade]) db?.close();
+  try {
+    await clearTestDatabases();
+    const remaining = (await indexedDB.databases()).map((database) => database.name);
+    check(testDbNames.every((name) => !remaining.includes(name)), "test databases remain after cleanup");
+    checks.push("all test-only databases removed after run");
+  } catch (cleanupError) {
+    failure = failure ? new AggregateError([failure, cleanupError], "test and cleanup failed") : cleanupError;
+  }
+}
+
+if (failure) {
+  output.dataset.status = "fail";
+  output.textContent = JSON.stringify({ status: "FAIL", checks, error: String(failure), stack: failure?.stack }, null, 2);
+} else {
+  output.dataset.status = "pass";
+  output.textContent = JSON.stringify({ status: "PASS", checks }, null, 2);
+}
+</script>
+</html>
