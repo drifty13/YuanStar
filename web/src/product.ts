@@ -3,6 +3,7 @@ import { createDisplayLocaleAdapter, displayTooltipText } from "./display-locale
 import { WorkspaceDomainError } from "./business/model";
 import { automaticReconcileResolution, buildReconcileDraftFromBrowserRuntime, type ReconcileDraftV1, type ReconcileResolutionV1 } from "./business/reconcile";
 import { ProductWorkspaceController, WorkspaceRevisionConflictError, type ProductWorkspaceContext } from "./product-workspace";
+import { ProductImportDraftController } from "./product-import-draft";
 import {
   ProductOcrImportCoordinator,
   ProductOcrImportError,
@@ -11,7 +12,6 @@ import {
   applyProductImportClassificationFailure,
   confirmAllProductImportImages,
   confirmProductImportPool,
-  createProductImportImages,
   moveProductImportImage as moveProductImportImageState,
   reconcileSourceImagesFromImport,
   removeProductImportImage as removeProductImportImageState,
@@ -105,6 +105,10 @@ const experienceDraft = { orange: "", purple: "", white: "" };
 let importImages: ImportImage[] = [];
 let overlapRelations: ProductOverlapPair[] = [];
 const ocrCoordinator = new ProductOcrImportCoordinator();
+const importDraftController = new ProductImportDraftController();
+let importDraftReadyAccountId: string | null = null;
+let importDraftTransitioning = false;
+let importDraftGeneration = 0;
 type ProductOcrUiStatus = "idle" | "validating" | "initializing" | "running" | "cancelling" | "cancelled" | "reconciling" | "review_required" | "committing" | "completed" | "failed";
 let ocrUi = { status: "idle" as ProductOcrUiStatus, completed: 0, total: 0, sourceImageId: null as string | null, message: "", error: "" };
 let ocrConfirmOpen = false;
@@ -744,7 +748,9 @@ function accountInput(): { displayName: string; gameVersion: "如鸢" | "代号�
 }
 
 function clearAccountScopedTransientState(): void {
-  importImages.forEach((image) => URL.revokeObjectURL(image.objectUrl));
+  importDraftGeneration++;
+  importDraftReadyAccountId = null;
+  importDraftController.releaseImages(importImages);
   importImages = [];
   overlapRelations = [];
   clearPendingReviewUi();
@@ -758,6 +764,27 @@ function clearAccountScopedTransientState(): void {
   ocrConfirmOpen = false;
   deleteAccountConfirmOpen = false;
   ocrUi = { status: "idle", completed: 0, total: 0, sourceImageId: null, message: "", error: "" };
+}
+
+function reportImportDraftError(error: unknown, action = "保存"): void {
+  const message = error instanceof Error ? error.message : `待识别图片${action}失败。`;
+  importNotice(`待识别图片${action}失败：${message}`, true);
+  showToast(message);
+  renderPage();
+}
+
+function trackImportDraftWrite(write: Promise<void>): void {
+  const accountId = workspaceContext?.account.accountId;
+  void write.catch((error: unknown) => {
+    if (workspaceContext?.account.accountId === accountId) reportImportDraftError(error);
+  });
+}
+
+async function restoreAccountImportDraft(accountId: string): Promise<void> {
+  const state = await importDraftController.activate(accountId);
+  importImages = state.images;
+  overlapRelations = state.overlapPairs;
+  importDraftReadyAccountId = accountId;
 }
 
 async function saveCurrentAccountMetadata(render = true): Promise<boolean> {
@@ -780,52 +807,76 @@ async function saveCurrentAccountMetadata(render = true): Promise<boolean> {
 
 async function switchProductAccount(accountId: string): Promise<void> {
   const current = workspaceContext;
-  if (!current || accountId === current.account.accountId || isOcrLocked()) { renderPage(); return; }
-  if (!await saveCurrentAccountMetadata(false)) { renderPage(); return; }
+  if (!current || accountId === current.account.accountId || isOcrLocked() || importDraftTransitioning) { renderPage(); return; }
+  importDraftTransitioning = true;
   try {
+    if (!await saveCurrentAccountMetadata(false)) { renderPage(); return; }
+    importDraftGeneration++;
+    await importDraftController.flush();
     clearAccountScopedTransientState();
     applyWorkspaceContext(await workspaceController.switchAccount(accountId));
     availableAccounts = await workspaceController.listAccounts();
     restorePersistedOcrReview();
+    await restoreAccountImportDraft(accountId);
     reviewSaveState = "saved";
   } catch (error) {
     importNotice(error instanceof Error ? error.message : "账号切换失败。", true);
+    if (workspaceContext && importDraftReadyAccountId !== workspaceContext.account.accountId) {
+      try { await restoreAccountImportDraft(workspaceContext.account.accountId); } catch (restoreError) { reportImportDraftError(restoreError, "恢复"); }
+    }
   }
+  finally { importDraftTransitioning = false; }
   renderPage();
 }
 
 async function createProductAccount(): Promise<void> {
-  if (isOcrLocked()) { renderPage(); return; }
+  if (isOcrLocked() || importDraftTransitioning) { renderPage(); return; }
+  importDraftTransitioning = true;
   try {
+    await importDraftController.flush();
+    importDraftGeneration++;
     const account = await workspaceController.createDefaultAccount();
     clearAccountScopedTransientState();
     applyWorkspaceContext(await workspaceController.switchAccount(account.accountId));
     availableAccounts = await workspaceController.listAccounts();
     restorePersistedOcrReview();
+    await restoreAccountImportDraft(account.accountId);
     reviewSaveState = "saved";
   } catch (error) {
     const message = error instanceof Error ? error.message : "账号未创建。";
     importNotice(message, true);
     if (error instanceof WorkspaceDomainError && error.code === "account_name_conflict") showToast(message);
+    if (workspaceContext && importDraftReadyAccountId !== workspaceContext.account.accountId) {
+      try { await restoreAccountImportDraft(workspaceContext.account.accountId); } catch (restoreError) { reportImportDraftError(restoreError, "恢复"); }
+    }
   }
+  finally { importDraftTransitioning = false; }
   renderPage();
 }
 
 async function deleteCurrentProductAccount(): Promise<void> {
   const current = workspaceContext;
-  if (!current || isOcrLocked()) { renderPage(); return; }
+  if (!current || isOcrLocked() || importDraftTransitioning) { renderPage(); return; }
   deleteAccountConfirmOpen = false;
+  importDraftTransitioning = true;
   try {
+    await importDraftController.flush();
+    importDraftGeneration++;
     clearAccountScopedTransientState();
     const fallback = await workspaceController.deleteAccount(current.account.accountId);
     if (!fallback) throw new Error("删除后未能解析有效账号。");
     applyWorkspaceContext(fallback);
     availableAccounts = await workspaceController.listAccounts();
     restorePersistedOcrReview();
+    await restoreAccountImportDraft(fallback.account.accountId);
     reviewSaveState = "saved";
   } catch (error) {
     importNotice(error instanceof Error ? error.message : "账号未删除。", true);
+    if (workspaceContext && importDraftReadyAccountId !== workspaceContext.account.accountId) {
+      try { await restoreAccountImportDraft(workspaceContext.account.accountId); } catch (restoreError) { reportImportDraftError(restoreError, "恢复"); }
+    }
   }
+  finally { importDraftTransitioning = false; }
   renderPage();
 }
 
@@ -837,7 +888,14 @@ function openDeleteAccountConfirm(): void {
 
 async function loadProductWorkspace(): Promise<void> {
   reviewSaveState = "loading"; reviewError = ""; renderPage();
-  try { applyWorkspaceContext(await workspaceController.load()); availableAccounts = await workspaceController.listAccounts(); restorePersistedOcrReview(); reviewSaveState = "saved"; }
+  try {
+    applyWorkspaceContext(await workspaceController.load());
+    availableAccounts = await workspaceController.listAccounts();
+    restorePersistedOcrReview();
+    try { await restoreAccountImportDraft(workspaceContext!.account.accountId); }
+    catch (error) { reviewSaveState = "failed"; reviewError = error instanceof Error ? error.message : "待识别图片恢复失败。"; reportImportDraftError(error, "恢复"); return; }
+    reviewSaveState = "saved";
+  }
   catch (error) { reviewSaveState = "failed"; reviewError = error instanceof Error ? error.message : "无法打开当前工作区。"; }
   renderPage();
 }
@@ -1432,50 +1490,62 @@ function importPoolFrom(value: string | undefined): Pool | null {
 }
 
 function removeImportImage(id: string): void {
-  if (isOcrLocked()) { importNotice("识别正在运行，请先完成或取消本次识别。", true); renderPage(); return; }
+  if (isOcrLocked() || importDraftTransitioning) { importNotice("待识别图片正在处理，请稍后再操作。", true); renderPage(); return; }
   const next = removeProductImportImageState(importImages, overlapRelations, id);
   if (!next.removed) return;
-  URL.revokeObjectURL(next.removed.objectUrl);
+  importDraftController.releaseImages([next.removed]);
   importImages = next.images;
   overlapRelations = next.pairs;
+  trackImportDraftWrite(importDraftController.saveMetadata(importImages, overlapRelations));
   if (imageViewer?.items.some((item) => item.id === id)) imageViewer = null;
   renderPage();
 }
 
 function moveImportImage(id: string, targetPool: Pool): void {
-  if (isOcrLocked()) { importNotice("识别正在运行，请先完成或取消本次识别。", true); renderPage(); return; }
+  if (isOcrLocked() || importDraftTransitioning) { importNotice("待识别图片正在处理，请稍后再操作。", true); renderPage(); return; }
   if (findImportImage(id)?.classificationStatus === "classifying") { importNotice("正在判断图片类型，请稍候。", true); renderPage(); return; }
   const next = moveProductImportImageState(importImages, overlapRelations, id, targetPool);
   importImages = next.images;
   overlapRelations = next.pairs;
+  trackImportDraftWrite(importDraftController.saveMetadata(importImages, overlapRelations));
   renderPage();
 }
 
 async function classifyAddedImages(additions: ImportImage[]): Promise<void> {
+  const generation = importDraftGeneration;
+  const accountId = workspaceContext?.account.accountId;
+  const persistenceGeneration = importDraftController.generation;
   let failed = false;
   for (const addition of additions) {
-    if (!findImportImage(addition.sourceImageId)) continue;
+    if (generation !== importDraftGeneration || !findImportImage(addition.sourceImageId)) continue;
     try {
       const classification = await ocrCoordinator.classify(addition);
+      if (generation !== importDraftGeneration || !accountId || workspaceContext?.account.accountId !== accountId || !importDraftController.isCurrent(accountId, persistenceGeneration)) return;
+      if (!findImportImage(addition.sourceImageId)) continue;
       importImages = applyProductImportClassification(importImages, addition.sourceImageId, classification);
       if (classification.pageType === "unknown") failed = true;
     } catch {
+      if (generation !== importDraftGeneration || !accountId || workspaceContext?.account.accountId !== accountId || !importDraftController.isCurrent(accountId, persistenceGeneration)) return;
+      if (!findImportImage(addition.sourceImageId)) continue;
       failed = true;
       importImages = applyProductImportClassificationFailure(importImages, addition.sourceImageId);
     }
+    trackImportDraftWrite(importDraftController.saveMetadata(importImages, overlapRelations));
     if (activeTab === "import") renderPage();
   }
+  if (generation !== importDraftGeneration) return;
   if (failed) importNotice("部分图片分类失败，请人工调整所属池后确认。", true);
   else importNotice("OCR 分类推荐已完成，请确认每张图片的所属池。");
   if (activeTab === "import") renderPage();
 }
 
 function addImportFiles(files: Iterable<File>): void {
-  if (isOcrLocked()) { importNotice("识别正在运行，请先完成或取消本次识别。", true); renderPage(); return; }
+  if (isOcrLocked() || importDraftTransitioning || !workspaceContext || importDraftReadyAccountId !== workspaceContext.account.accountId) { importNotice("请等待当前工作区与待识别图片加载完成。", true); renderPage(); return; }
   try {
-    const additions = createProductImportImages(files);
+    const additions = importDraftController.createImages(files);
     if (!additions.length) return;
     importImages = [...importImages, ...additions];
+    trackImportDraftWrite(importDraftController.save(importImages, overlapRelations, additions));
     ocrUi = { status: "idle", completed: 0, total: importImages.length, sourceImageId: null, message: "正在判断图片类型，请稍候。", error: "" };
     renderPage();
     void classifyAddedImages(additions);
@@ -1485,19 +1555,32 @@ function addImportFiles(files: Iterable<File>): void {
   }
 }
 
-function clearImportImages(): void {
-  if (isOcrLocked()) return;
-  importImages.forEach((image) => URL.revokeObjectURL(image.objectUrl));
-  importImages = [];
-  overlapRelations = [];
-  imageViewer = null;
-  ocrUi = { status: "idle", completed: 0, total: 0, sourceImageId: null, message: "", error: "" };
-  renderPage();
+async function clearImportImages(): Promise<void> {
+  if (isOcrLocked() || importDraftTransitioning || !workspaceContext || importDraftReadyAccountId !== workspaceContext.account.accountId) return;
+  importDraftTransitioning = true;
+  const generation = ++importDraftGeneration;
+  try {
+    await importDraftController.clear();
+    if (generation !== importDraftGeneration) return;
+    importDraftController.releaseImages(importImages);
+    importImages = [];
+    overlapRelations = [];
+    imageViewer?.revocableUrls.forEach((url) => URL.revokeObjectURL(url));
+    imageViewer = null;
+    ocrUi = { status: "idle", completed: 0, total: 0, sourceImageId: null, message: "", error: "" };
+  } catch (error) {
+    for (const image of importImages.filter(({ classificationStatus }) => classificationStatus === "classifying")) {
+      importImages = applyProductImportClassificationFailure(importImages, image.sourceImageId);
+    }
+    reportImportDraftError(error, "清空");
+  }
+  finally { if (generation === importDraftGeneration) importDraftTransitioning = false; renderPage(); }
 }
 
 function createOcrJobId(): string { return `product-ocr-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`; }
 
 async function requestStartOcr(): Promise<void> {
+  if (importDraftTransitioning || !workspaceContext || importDraftReadyAccountId !== workspaceContext.account.accountId) { importNotice("请等待当前工作区与待识别图片加载完成。", true); renderPage(); return; }
   if (canCancelOcr()) { ocrUi.status = "cancelling"; ocrUi.message = "正在取消本次识别。"; ocrCoordinator.cancel(); renderPage(); return; }
   if (pendingOcrReview) { clearPendingReviewUi(); pendingOcrReview = null; }
   ocrUi.status = "validating"; ocrUi.error = ""; renderPage();
@@ -1771,34 +1854,37 @@ function bindImportControls(): void {
   }));
   root.querySelectorAll<HTMLButtonElement>("[data-confirm-pool]").forEach((button) => button.addEventListener("click", () => {
     const pool = importPoolFrom(button.dataset.confirmPool);
-    if (!pool || isOcrLocked()) return;
+    if (!pool || isOcrLocked() || importDraftTransitioning) return;
     if (hasClassifyingImportImages() || ocrCoordinator.classificationPending) { importNotice("正在判断图片类型，请稍候。", true); renderPage(); return; }
     importImages = confirmProductImportPool(importImages, pool);
+    trackImportDraftWrite(importDraftController.saveMetadata(importImages, overlapRelations));
     importNotice(`${pool}池分类已确认。`);
     renderPage();
   }));
   root.querySelector<HTMLButtonElement>("[data-confirm-all-pools]")?.addEventListener("click", () => {
-    if (isOcrLocked()) return;
+    if (isOcrLocked() || importDraftTransitioning) return;
     if (hasClassifyingImportImages() || ocrCoordinator.classificationPending) { importNotice("正在判断图片类型，请稍候。", true); renderPage(); return; }
     importImages = confirmAllProductImportImages(importImages);
+    trackImportDraftWrite(importDraftController.saveMetadata(importImages, overlapRelations));
     importNotice("已确认当前所有图片此刻所在的分类池。");
     renderPage();
   });
-  root.querySelector<HTMLButtonElement>("[data-clear-import-images]")?.addEventListener("click", clearImportImages);
+  root.querySelector<HTMLButtonElement>("[data-clear-import-images]")?.addEventListener("click", () => { void clearImportImages(); });
   root.querySelectorAll<HTMLButtonElement>("[data-add-overlap]").forEach((button) => button.addEventListener("click", () => {
     const pool = button.dataset.addOverlap === "主星" || button.dataset.addOverlap === "辅星" ? button.dataset.addOverlap : null;
-    if (!pool) return;
+    if (!pool || importDraftTransitioning) return;
     const before = root.querySelector<HTMLSelectElement>(`[data-overlap-before="${pool}"]`)?.value;
     const after = root.querySelector<HTMLSelectElement>(`[data-overlap-after="${pool}"]`)?.value;
     if (!before || !after) return;
-    try { overlapRelations = addProductOverlapPair(importImages, overlapRelations, pool, before, after); importNotice("已添加重叠关系。"); }
+    try { overlapRelations = addProductOverlapPair(importImages, overlapRelations, pool, before, after); trackImportDraftWrite(importDraftController.saveMetadata(importImages, overlapRelations)); importNotice("已添加重叠关系。"); }
     catch (error) { const message = error instanceof Error ? error.message : "无法添加重叠关系。"; importNotice(`！${message}`, true); showToast(message); }
     renderPage();
   }));
   root.querySelectorAll<HTMLButtonElement>("[data-remove-overlap]").forEach((button) => button.addEventListener("click", () => {
     const pairId = button.dataset.removeOverlap;
-    if (!pairId || isOcrLocked()) return;
+    if (!pairId || isOcrLocked() || importDraftTransitioning) return;
     overlapRelations = overlapRelations.filter((relation) => relation.pairId !== pairId);
+    trackImportDraftWrite(importDraftController.saveMetadata(importImages, overlapRelations));
     renderPage();
   }));
   root.querySelector<HTMLButtonElement>("[data-start-ocr]")?.addEventListener("click", () => { void requestStartOcr(); });
@@ -1823,3 +1909,5 @@ displayLocaleAdapter.start();
 renderPage();
 void loadExperienceRules();
 void loadProductWorkspace();
+window.addEventListener("pagehide", () => importDraftController.releaseAll());
+window.addEventListener("pageshow", (event) => { if (event.persisted) window.location.reload(); });
