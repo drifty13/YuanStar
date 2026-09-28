@@ -1535,7 +1535,7 @@ async function classifyAddedImages(additions: ImportImage[]): Promise<void> {
   }
   if (generation !== importDraftGeneration) return;
   if (failed) importNotice("部分图片分类失败，请人工调整所属池后确认。", true);
-  else importNotice("OCR 分类推荐已完成，请确认每张图片的所属池。");
+  else importNotice("图片分类推荐已完成，请确认每张图片的所属池。");
   if (activeTab === "import") renderPage();
 }
 

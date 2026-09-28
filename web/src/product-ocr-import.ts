@@ -3,6 +3,7 @@ import type { ReconcileDraftV1, ReconcileResolutionV1, ReconcileSourceImageInput
 import type { ConfirmedOverlapPairV1 } from "./structured/batch-orchestration.js";
 import { BrowserOcrRuntime } from "./ocr/browser-ocr-runtime.js";
 import { BrowserVisionWorkerClient } from "./structured/browser-vision-worker-client.js";
+import { classifyProductImportImageVisual } from "./product-import-visual-classifier.js";
 import type { BrowserVisionEngine, PageClassificationV1 } from "./structured/contracts.js";
 import type {
   BrowserAnalysisResultV1,
@@ -265,12 +266,14 @@ export class ProductOcrImportCoordinator {
   private activeContext: ProductOcrRunContextV1 | null = null;
   private readonly engine: BrowserVisionEngine;
   private readonly runtime: BrowserOcrRuntime;
+  private readonly classifyImportImage: (image: ProductImportImage) => Promise<PageClassificationV1>;
   private classificationQueue: Promise<void> = Promise.resolve();
   private pendingClassificationCount = 0;
 
-  constructor(options: { engine?: BrowserVisionEngine; runtime?: BrowserOcrRuntime } = {}) {
+  constructor(options: { engine?: BrowserVisionEngine; runtime?: BrowserOcrRuntime; classifyImportImage?: (image: ProductImportImage) => Promise<PageClassificationV1> } = {}) {
     this.engine = options.engine ?? new BrowserVisionWorkerClient();
     this.runtime = options.runtime ?? new BrowserOcrRuntime({ createEngine: () => this.engine });
+    this.classifyImportImage = options.classifyImportImage ?? classifyProductImportImageVisual;
   }
 
   get active(): ProductOcrRunContextV1 | null { return this.activeContext; }
@@ -279,10 +282,7 @@ export class ProductOcrImportCoordinator {
   async classify(image: ProductImportImage): Promise<PageClassificationV1> {
     if (this.activeContext) throw new ProductOcrImportError("ocr_already_running", "识别运行期间不能重新判断图片类型。");
     this.pendingClassificationCount += 1;
-    const classify = async (): Promise<PageClassificationV1> => {
-      await this.engine.initialize({});
-      return this.engine.classifyImage({ imageId: image.sourceImageId, file: image.file });
-    };
+    const classify = (): Promise<PageClassificationV1> => this.classifyImportImage(image);
     const result = this.classificationQueue.then(classify, classify);
     this.classificationQueue = result.then(() => undefined, () => undefined);
     try { return await result; }

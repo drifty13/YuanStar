@@ -45,24 +45,31 @@ function classification(pageType: PageClassificationV1["pageType"], reviewRequir
 }
 
 class FakeClassificationEngine implements BrowserVisionEngine {
+  initializeCalls = 0;
+  recognizeCalls = 0;
   classificationCalls: string[] = [];
-  async initialize(): Promise<ModelManifest> { return { schemaVersion: "1.0", models: [] }; }
+  async initialize(): Promise<ModelManifest> { this.initializeCalls++; return { schemaVersion: "1.0", models: [] }; }
   async classifyImage(input: BrowserImageInput): Promise<PageClassificationV1> {
     this.classificationCalls.push(input.imageId);
     return classification(input.imageId === "image-1" ? "main" : input.imageId === "image-2" ? "support" : "experience", input.imageId === "image-3");
   }
-  async analyzeImage(): Promise<never> { throw new Error("not used"); }
+  async analyzeImage(): Promise<never> { this.recognizeCalls++; throw new Error("not used"); }
   async dispose(): Promise<void> {}
 }
 
 const fakeEngine = new FakeClassificationEngine();
-const classificationCoordinator = new ProductOcrImportCoordinator({ engine: fakeEngine });
+const visualClassificationCalls: string[] = [];
+const classificationCoordinator = new ProductOcrImportCoordinator({ engine: fakeEngine, classifyImportImage: async (image) => {
+  visualClassificationCalls.push(image.sourceImageId);
+  return classification(image.sourceImageId === "image-1" ? "main" : image.sourceImageId === "image-2" ? "support" : "experience", image.sourceImageId === "image-3");
+} });
 let autoClassified = images;
 for (const image of images.slice(0, 3)) autoClassified = applyProductImportClassification(autoClassified, image.sourceImageId, await classificationCoordinator.classify(image));
-expect(autoClassified[0]!.pool === "主星" && autoClassified[1]!.pool === "辅星" && autoClassified[2]!.pool === "经验星曜", "existing classifyImage maps main, support and experience into the three visible pools");
+expect(autoClassified[0]!.pool === "主星" && autoClassified[1]!.pool === "辅星" && autoClassified[2]!.pool === "经验星曜", "visual suggestions map main, support and experience into the three visible pools");
 expect(autoClassified.slice(0, 3).every((image) => !image.confirmed && image.classificationStatus === "suggested"), "classification recommendations never auto-confirm an image");
 expect(autoClassified[2]!.classificationReviewRequired && !autoClassified[2]!.confirmed, "reviewRequired keeps the recommendation explicitly unconfirmed");
-expect(fakeEngine.classificationCalls.join(",") === "image-1,image-2,image-3", "the coordinator invokes the injected BrowserVisionEngine classify API");
+expect(fakeEngine.initializeCalls === 0 && fakeEngine.classificationCalls.length === 0 && fakeEngine.recognizeCalls === 0, "pre-classification must make zero OCR initialize, classifyImage and recognize calls");
+expect(visualClassificationCalls.join(",") === "image-1,image-2,image-3", "coordinator invokes the visual classifier with stable source identities");
 
 const failedClassification = applyProductImportClassificationFailure(images, "image-4");
 expect(failedClassification[3]!.file === third && failedClassification[3]!.classificationStatus === "failed" && !failedClassification[3]!.confirmed, "classifier failure preserves the exact File and requires manual correction");
@@ -121,6 +128,12 @@ expect(job.images[0]!.file === original && job.images.every((image) => image.fil
 expect(job.confirmedOverlapPairs?.[0]?.pairId === pairs[0]!.pairId && job.confirmedOverlapPairs?.[0]?.sourceImageIdA === "image-1", "overlap pairs map with deterministic IDs and source identities");
 const commitSources = reconcileSourceImagesFromImport(pairedImages);
 expect(commitSources[0]!.blob === original && commitSources[0]!.sourceImageId === job.images[0]!.sourceImageId, "commit reuses the exact OCR File and sourceImageId");
+
+// The stub deliberately fails recognition; only an explicit run may reach it.
+const formalRun = await classificationCoordinator.run({ ...runContext, images: [pairedImages[0]!], overlapPairs: [] }, () => {});
+expect(Number(fakeEngine.initializeCalls) === 2 && Number(fakeEngine.recognizeCalls) === 1 && fakeEngine.classificationCalls.length === 0, "formal run retains runtime and batch initialization and invokes recognition with the confirmed pool");
+expect(formalRun.status === "failed" && formalRun.result === null && formalRun.error?.code === "image_analysis_failed" && classificationCoordinator.active === null, "formal OCR failure retains the existing runtime result and context cleanup");
+expect(visualClassificationCalls.length === 3, "formal run does not substitute the visual suggestion classifier for OCR");
 
 function occurrence(overrides: Record<string, unknown> = {}): any {
   return { occurrenceId: "occ-1", row: 0, column: 0, completeness: "complete", sourceRect: { card: { x: 10, y: 20, width: 80, height: 100 }, name: { x: 20, y: 80, width: 60, height: 15 }, level: { x: 20, y: 95, width: 30, height: 12 }, quality: { x: 10, y: 20, width: 20, height: 20 }, equipped: { x: 70, y: 20, width: 20, height: 20 } }, effectiveName: "天府", effectiveLevel: 40, quality: "橙", qualityConfidence: .9, nameConfidence: .9, levelConfidence: .9, equippedState: "unknown", reviewRequired: false, ...overrides };

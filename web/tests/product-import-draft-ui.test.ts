@@ -1,6 +1,8 @@
 import { getImportDraft, saveImportDraft, type ImportDraftImageRecord, type SaveImportDraftInput } from "../src/business/persistence/import-draft-repository.js";
 import { ProductImportDraftController, restoreProductImportDraft } from "../src/product-import-draft.js";
-import { removeProductImportImage, type ProductImportImage, type ProductOverlapPair } from "../src/product-ocr-import.js";
+import { applyProductImportClassification, removeProductImportImage, type ProductImportImage, type ProductOverlapPair } from "../src/product-ocr-import.js";
+import { classifyPageVisual } from "../src/structured/page-routing-visual-only.js";
+import { toPageClassificationV1 } from "../src/structured/page-routing-logic.js";
 
 function expect(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 function key(value: unknown): string { return JSON.stringify(value); }
@@ -268,6 +270,47 @@ expect(created.every(({ url }) => revoked.includes(url)), "all Draft-owned URLs 
   removalController.releaseAll();
   expect(removalCreated.every((url) => removalRevoked.filter((revokedUrl) => revokedUrl === url).length === 1), "all removal lifecycle URLs are revoked exactly once");
   console.log("PASS removed Draft image: metadata and Blob deletion, retained Blob, restore and URL ownership");
+}
+
+// P3 suggestions still round-trip through the unchanged P2 metadata APIs.
+{
+  const visualDb = new FakeDatabase();
+  visualDb.createObjectStore("importDrafts", { keyPath: "accountId" });
+  visualDb.createObjectStore("importDraftImages", { keyPath: ["accountId", "sourceImageId"] });
+  let urlOrdinal = 0;
+  const visualDraft = new ProductImportDraftController({ openDatabase: async () => visualDb as unknown as IDBDatabase, urls: {
+    createObjectUrl: () => `blob:visual-draft-${++urlOrdinal}`, revokeObjectUrl: () => {},
+  } });
+  await visualDraft.activate("visual-A");
+  const types = ["main", "support", "experience", "unknown"] as const;
+  let visualImages = visualDraft.createImages(types.map((type) => file(`${type}.png`, type, 1234)));
+  await visualDraft.save(visualImages, [], visualImages);
+  const blobWrites = visualDb.blobWrites;
+  for (const [index, type] of types.entries()) {
+    const width = 300, height = 600;
+    const data = new Uint8ClampedArray(width * height * 4);
+    data.fill(40);
+    if (type !== "unknown") {
+      const left = { main: 12, support: 112, experience: 212 }[type];
+      for (let y = 52; y < 72; y++) for (let x = left; x < left + 75; x++) {
+        const at = (y * width + x) * 4;
+        data[at] = 220; data[at + 1] = 180; data[at + 2] = 100; data[at + 3] = 255;
+      }
+    }
+    const result = toPageClassificationV1(classifyPageVisual({ width, height, data } as ImageData, { x: 0, y: 0, width, height }));
+    expect(result.pageType === type, `P3 ${type} visual result reaches P2 persistence`);
+    visualImages = applyProductImportClassification(visualImages, visualImages[index]!.sourceImageId, result);
+    await visualDraft.saveMetadata(visualImages, []);
+  }
+  expect(visualDb.blobWrites === blobWrites, "visual result metadata saves never rewrite image Blobs");
+  const metadata = (items: ProductImportImage[]) => items.map(({ pool, suggestedPool, confirmed, classificationStatus, classificationReviewRequired, poolSource }) => ({ pool, suggestedPool, confirmed, classificationStatus, classificationReviewRequired, poolSource }));
+  const expectedMetadata = key(metadata(visualImages));
+  visualDraft.releaseImages(visualImages);
+  const refreshed = await visualDraft.activate("visual-A");
+  expect(key(metadata(refreshed.images)) === expectedMetadata, "refresh preserves all visual suggestion and unknown/manual-review metadata");
+  expect(refreshed.images.every((item) => !item.confirmed) && refreshed.images[3]?.classificationReviewRequired && refreshed.images[3]?.classificationStatus === "failed", "P2 restore never auto-confirms visual suggestions or unknown");
+  visualDraft.releaseAll();
+  console.log("PASS P3 visual metadata: main/support/experience/unknown persistence, refresh and no Blob rewrite");
 }
 
 console.log("PASS product Import Draft UI lifecycle: restore, append, removal, metadata, accounts, clear, generation, recovery and URL ownership");

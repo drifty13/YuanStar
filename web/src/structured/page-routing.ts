@@ -1,10 +1,11 @@
 import { prepareRectVariants, recognizePreparedRectVariants } from "../ocr.js";
 import type { Rect } from "./contracts.js";
-import { classifyPageVisual as classifyVisual, croppedGridTopCircleCount } from "./page-routing-visual.js";
+import { croppedGridTopCircleCount } from "./page-routing-visual.js";
 import type { ScreenshotProfile } from "./types.js";
 import { routeTabOcrCandidates, type PageRoutingEvidence } from "./page-routing-logic.js";
 
 export { croppedGridTopCircleCount };
+export { classifyPageVisual } from "./page-routing-visual-only.js";
 export type { PageRoutingEvidence } from "./page-routing-logic.js";
 export { toPageClassificationV1 } from "./page-routing-logic.js";
 
@@ -14,20 +15,6 @@ function tabRect(viewport: Rect): Rect {
     y: viewport.y + Math.trunc(viewport.height * 0.07),
     width: Math.max(1, Math.trunc(viewport.width * 0.90)),
     height: Math.max(1, Math.trunc(viewport.height * 0.12)),
-  };
-}
-
-export function classifyPageVisual(image: ImageData, viewport: Rect): PageRoutingEvidence {
-  const visual = classifyVisual(image, viewport);
-  return {
-    pageType: visual.pageType,
-    confidence: visual.confidence,
-    evidence: visual.evidence.map((item) => item.value),
-    selected: visual.pageType !== "unknown",
-    tabOcrCandidates: [],
-    warning: visual.warning,
-    reviewRequired: visual.pageType === "unknown",
-    tabOcrMs: 0,
   };
 }
 
