@@ -1,6 +1,7 @@
 import { openDatabase } from "./business/persistence/repository.js";
 import { clearImportDraft, getImportDraft, replaceImportDraft, saveImportDraft, saveImportDraftMetadata, ImportDraftIntegrityError, type ImportDraftImageMetadata, type ImportDraftSnapshot, type SaveImportDraftInput } from "./business/persistence/import-draft-repository.js";
 import { createProductImportImages, type ProductImportImage, type ProductOverlapPair } from "./product-ocr-import.js";
+import { isCommittedImportDraft, type CommittedDraftSources } from "./product-ocr-commit-handoff.js";
 
 export interface ProductImportDraftState { images: ProductImportImage[]; overlapPairs: ProductOverlapPair[] }
 export interface ProductImportDraftUrls { createObjectUrl(file: File): string; revokeObjectUrl(url: string): void }
@@ -67,19 +68,27 @@ export class ProductImportDraftController {
   }
   releaseImages(images: ProductImportImage[]): void { images.forEach(({ objectUrl }) => { if (this.urlsOwned.delete(objectUrl)) this.urls.revokeObjectUrl(objectUrl); }); }
   releaseAll(): void { for (const url of this.urlsOwned) this.urls.revokeObjectUrl(url); this.urlsOwned.clear(); }
-  private enqueue<T>(accountId: string, epoch: number, write: (db: IDBDatabase) => Promise<T>): Promise<T | undefined> {
+  private enqueue<T>(accountId: string, epoch: number, write: (db: IDBDatabase) => Promise<T>, housekeeping = false): Promise<T | undefined> {
     if (this.accountId !== accountId) return Promise.reject(new Error("Import Draft 账号不可用"));
     let executed = false;
     const result = this.tail.then(async () => { if (!this.isCurrent(accountId, epoch)) return undefined; executed = true; return write(await this.database()); });
-    this.tail = result.then(() => { if (executed) this.lastError = null; }, (error: unknown) => { this.lastError = error; });
+    this.tail = result.then(() => { if (executed) this.lastError = null; }, (error: unknown) => { this.lastError = housekeeping ? null : error; });
     return result;
   }
   async flush(): Promise<void> { await this.tail; if (this.lastError) throw this.lastError; }
-  async activate(accountId: string): Promise<ProductImportDraftState> {
+  async activate(accountId: string, committed?: CommittedDraftSources): Promise<ProductImportDraftState> {
     await this.flush();
     const epoch = ++this.epoch;
     this.accountId = accountId;
     const snapshot = await getImportDraft(await this.database(), accountId);
+    if (!this.isCurrent(accountId, epoch)) throw new Error("Import Draft 恢复期间账号已切换");
+    if (snapshot && isCommittedImportDraft(snapshot.draft, committed)) {
+      // Suppress before rebuilding Files/URLs, even when a retry of housekeeping fails.
+      await this.retireCommitted(accountId, epoch);
+      if (!this.isCurrent(accountId, epoch + 1)) throw new Error("Import Draft 恢复期间账号已切换");
+      this.releaseAll();
+      return { images: [], overlapPairs: [] };
+    }
     const state = restoreProductImportDraft(snapshot, this.urls);
     if (!this.isCurrent(accountId, epoch)) { state.images.forEach(({ objectUrl }) => this.urls.revokeObjectUrl(objectUrl)); throw new Error("Import Draft 恢复期间账号已切换"); }
     if (snapshot?.draft.images.some(({ classificationStatus }) => classificationStatus === "classifying")) {
@@ -109,5 +118,22 @@ export class ProductImportDraftController {
     const accountId = this.accountId; if (!accountId) return Promise.reject(new Error("Import Draft 账号尚未确定"));
     const epoch = ++this.epoch;
     return this.enqueue(accountId, epoch, async (db) => { await clearImportDraft(db, accountId); }).then(() => undefined);
+  }
+
+  /** Runs after prior writes; invalidates later old writes without poisoning strict flush/clear. */
+  async retireCommitted(accountId: string, epoch: number): Promise<{ retired: boolean; cleanupError?: unknown }> {
+    if (!this.isCurrent(accountId, epoch)) return { retired: false };
+    try {
+      const retired = await this.enqueue(accountId, epoch, async (db) => {
+        if (!this.isCurrent(accountId, epoch)) return false;
+        ++this.epoch;
+        await clearImportDraft(db, accountId);
+        return true;
+      }, true);
+      return { retired: retired === true };
+    } catch (cleanupError) {
+      if (this.isCurrent(accountId, epoch)) ++this.epoch;
+      return { retired: true, cleanupError };
+    }
   }
 }

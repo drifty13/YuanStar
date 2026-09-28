@@ -3,6 +3,11 @@ import { ProductImportDraftController, restoreProductImportDraft } from "../src/
 import { applyProductImportClassification, removeProductImportImage, type ProductImportImage, type ProductOverlapPair } from "../src/product-ocr-import.js";
 import { classifyPageVisual } from "../src/structured/page-routing-visual-only.js";
 import { toPageClassificationV1 } from "../src/structured/page-routing-logic.js";
+import { createStarCatalog } from "../src/business/catalog.js";
+import { commitReconciledAnalysis, type ReconcileDraftV1 } from "../src/business/reconcile.js";
+import { getImage, getWorkspace } from "../src/business/persistence/repository.js";
+import { buildPersistedProductReview, productReviewRowCropRect } from "../src/product-ocr-review.js";
+import { reviewSourceBlob, runProductOcrCommitHandoff } from "../src/product-ocr-commit-handoff.js";
 
 function expect(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 function key(value: unknown): string { return JSON.stringify(value); }
@@ -23,6 +28,7 @@ class FakeDatabase {
   blobWrites = 0;
   failBlobId: string | null = null;
   failDraftWrite = false;
+  failClear = false;
   readonly objectStoreNames = { contains: (name: string) => this.stores.has(name) };
   createObjectStore(name: string, options?: { keyPath?: string | string[] }): void { if (this.stores.has(name)) throw new Error(`duplicate store ${name}`); this.stores.set(name, new Map()); this.keyPaths.set(name, options?.keyPath ?? null); }
   transaction(): FakeTransaction { return new FakeTransaction(this); }
@@ -69,7 +75,10 @@ class FakeTransaction {
     this.records(name).set(key(primary), structuredClone(value));
     this.finishLater();
   }
-  delete(name: string, primary: unknown): void { this.records(name).delete(key(primary)); this.finishLater(); }
+  delete(name: string, primary: unknown): void {
+    if (this.db.failClear) throw new Error("injected Draft cleanup failure");
+    this.records(name).delete(key(primary)); this.finishLater();
+  }
   abort(): void { if (this.settled) return; this.settled = true; queueMicrotask(() => this.onabort?.()); }
   private finishLater(): void {
     if (this.settled || this.pending || this.scheduled) return;
@@ -314,3 +323,123 @@ expect(created.every(({ url }) => revoked.includes(url)), "all Draft-owned URLs 
 }
 
 console.log("PASS product Import Draft UI lifecycle: restore, append, removal, metadata, accounts, clear, generation, recovery and URL ownership");
+
+// P5: committed source identities must suppress a stale Draft before creating URLs.
+{
+  const db = new FakeDatabase();
+  db.createObjectStore("importDrafts", { keyPath: "accountId" });
+  db.createObjectStore("importDraftImages", { keyPath: ["accountId", "sourceImageId"] });
+  const created: string[] = [], revoked: string[] = [];
+  const draft = new ProductImportDraftController({ openDatabase: async () => db as unknown as IDBDatabase, urls: {
+    createObjectUrl: () => { const url = `blob:p5-${created.length}`; created.push(url); return url; },
+    revokeObjectUrl: (url) => { revoked.push(url); },
+  } });
+  await draft.activate("A");
+  const images = draft.createImages([file("same.png", "same-content", 1)]);
+  await draft.save(images, [], images);
+  draft.releaseImages(images);
+  const ids = images.map((image) => image.sourceImageId);
+  const witness = { accountId: "A", sourceImageIds: ids, reviewSourceImageIds: ids };
+  db.failClear = true;
+  const before = created.length;
+  const activate = draft.activate.bind(draft) as (accountId: string, committed: typeof witness) => ReturnType<typeof draft.activate>;
+  const restored = await activate("A", witness);
+  expect(restored.images.length === 0 && created.length === before, "P5 stale committed Draft never restores or creates URLs, even when cleanup fails");
+  await draft.flush();
+  expect(await getImportDraft(db as unknown as IDBDatabase, "A"), "failed housekeeping leaves durable stale metadata for later retry");
+  db.failClear = false;
+  await activate("A", witness);
+  expect(!(await getImportDraft(db as unknown as IDBDatabase, "A")), "later recovery eventually removes stale committed Draft");
+  const next = draft.createImages([file("same.png", "same-content", 1)]);
+  expect(next[0]!.sourceImageId !== ids[0], "same File content receives a new identity");
+  await draft.save(next, [], next);
+  const priorWrite = draft.saveMetadata(next.map((image) => ({ ...image, confirmed: true })), []);
+  const epoch = draft.generation;
+  db.failClear = true;
+  const retiring = draft.retireCommitted("A", epoch);
+  const lateOldWrite = draft.saveMetadata(next.map((image) => ({ ...image, confirmed: false })), []);
+  await priorWrite;
+  const result = await retiring;
+  await lateOldWrite;
+  expect(result.retired && result.cleanupError, "failed retirement returns housekeeping warning");
+  await draft.flush();
+  const retained = await getImportDraft(db as unknown as IDBDatabase, "A");
+  expect(retained?.draft.images[0]?.confirmed === true, "retirement follows prior metadata writes and invalidates later old writes");
+  draft.releaseImages(next);
+  const refreshed = await activate("A", witness);
+  expect(refreshed.images[0]?.sourceImageId === next[0]!.sourceImageId, "new source IDs survive old committed witness despite identical filename and content");
+  let strictFailed = false;
+  try { await draft.clear(); } catch { strictFailed = true; }
+  expect(strictFailed && await getImportDraft(db as unknown as IDBDatabase, "A"), "ordinary clear still rejects and retains durable Draft on failure");
+  db.failClear = false;
+  await draft.saveMetadata(refreshed.images, []);
+  await draft.flush();
+  await draft.activate("B");
+  const b = draft.createImages([file("B.png", "B", 1)]);
+  await draft.save(b, [], b);
+  db.failClear = true;
+  await draft.retireCommitted("B", draft.generation);
+  await draft.flush();
+  const a = await activate("A", witness);
+  expect(a.images.length === 1, "post-commit cleanup failure does not poison account switch or restore");
+  db.failClear = false;
+  draft.releaseAll();
+  expect(created.every((url) => revoked.filter((item) => item === url).length === 1), "P5 owned URLs revoke exactly once");
+  console.log("PASS P5 Draft recovery: exact identities, cleanup retry, queue ordering, strict clear and account recovery");
+}
+
+// Actual repository commit -> retirement -> persisted review, including failed housekeeping.
+for (const failCleanup of [false, true]) {
+  const db = new FakeDatabase();
+  for (const name of ["meta", "accounts", "workspaces", "images", "restorePoints", "restorePointImages", "importDrafts", "importDraftImages"]) db.createObjectStore(name);
+  const idb = db as unknown as IDBDatabase;
+  const revoked: string[] = [];
+  const controller = new ProductImportDraftController({ openDatabase: async () => idb, urls: {
+    createObjectUrl: () => `blob:committed-${failCleanup}`, revokeObjectUrl: (url) => { revoked.push(url); },
+  } });
+  await controller.activate("A");
+  let images = controller.createImages([file("same.png", "durable-source", 1)]);
+  await controller.save(images, [], images);
+  const image = images[0]!;
+  const catalog = createStarCatalog([{ name: "天府", kind: "主星", aliases: [], displayGroup: null, usageTags: [], rawEffectText: null }], {});
+  const candidate = { occurrenceId: "occ", sourceImageId: image.sourceImageId, sourceOrder: 1, row: 0, column: 0,
+    kind: "主星" as const, name: "天府", level: 10, quality: "橙" as const, qualityConfidence: 1, equippedState: "unknown" as const };
+  const draft: ReconcileDraftV1 = {
+    schemaVersion: 1, task: { taskId: "job", accountId: "A", baseRevision: 0 }, status: "ready_to_finalize", blockReasonCodes: [],
+    candidates: [candidate], occurrences: [{ ...candidate, completeness: "complete", nameConfidence: 1, levelConfidence: 1,
+      reviewRequired: false, inventoryAction: "keep", removedFromCurrentInventory: false, manualOverride: false }],
+    ordinaryGroups: [{ groupId: "group", occurrenceIds: ["occ"], primaryOccurrenceId: "occ", duplicateRelationIds: [] }],
+    ordinaryReviewItems: [], overlapReviewItems: [], duplicateRows: [], excludedOrdinaryOccurrences: [],
+    bag: { currentCount: 1, capacity: 100, reviewReasonCodes: [] }, experience: { orange: 0, purple: 0, white: 0, reviewReasonCodes: [] },
+    sourceImages: [{ sourceImageId: image.sourceImageId, sourceOrder: 1, suggestedPageType: "main", confirmedPool: "main", reviewRequired: false, warningCodes: [] }],
+    confirmedOverlapPairs: [], overlapAuditItems: [], reviewReasonCodes: [],
+  };
+  let review: ReturnType<typeof buildPersistedProductReview> = null;
+  let saved = false;
+  const outcome = await runProductOcrCommitHandoff({
+    commit: () => commitReconciledAnalysis({ db: idb, draft, catalog, gameVersion: "如鸢",
+      sourceImages: [{ sourceImageId: image.sourceImageId, blob: image.file, filename: image.filename, mimeType: image.file.type, width: 100, height: 100 }],
+      reviewRowRects: { [image.sourceImageId]: { "0": { x: 0, y: 0, width: 100, height: 30 } } } }),
+    isCurrent: () => true,
+    applyCommitted: () => { saved = true; db.failClear = failCleanup; },
+    retireDraft: async () => { const result = await controller.retireCommitted("A", controller.generation); if (result.cleanupError) throw result.cleanupError; },
+    retireMemory: () => { controller.releaseImages(images); images = []; },
+    usePersistedReview: () => {},
+  });
+  const committed = await getWorkspace(idb, "A");
+  expect(saved && committed?.revision === 1 && outcome === (failCleanup ? "cleanup_failed" : "saved"), "real workspace transaction remains successful after housekeeping");
+  expect(images.length === 0 && revoked.length === 1, "real commit releases Draft memory and ownership once");
+  const source = await getImage(idb, "A", image.sourceImageId);
+  expect(source?.filename === image.filename && await source.blob.text() === "durable-source", "official source identity, filename and Blob survive Draft retirement");
+  review = buildPersistedProductReview(committed.snapshot);
+  expect(review && productReviewRowCropRect(review.evidence, image.sourceImageId, 0)?.height === 30, "refreshed review keeps persisted row crop geometry");
+  const cropBlob = await reviewSourceBlob(null, image.sourceImageId, async (id) => (await getImage(idb, "A", id))?.blob);
+  expect(cropBlob && await cropBlob.text() === "durable-source", "refreshed crop reads official source Blob without File/runContext");
+  await controller.flush();
+  const restored = await controller.activate("A", { accountId: "A", sourceImageIds: [source.imageId], reviewSourceImageIds: Object.keys(committed.snapshot.importReview.imageAudit) });
+  expect(restored.images.length === 0 && await getWorkspace(idb, "A"), "failed cleanup refresh cannot resurrect Draft or remove workspace");
+  db.failClear = false;
+  await controller.activate("A", { accountId: "A", sourceImageIds: [source.imageId], reviewSourceImageIds: [source.imageId] });
+  expect(!(await getImportDraft(idb, "A")), "eventual cleanup succeeds without a second OCR commit");
+  console.log(`PASS real repository P5 commit, persisted review and refresh; cleanup failure=${failCleanup}`);
+}

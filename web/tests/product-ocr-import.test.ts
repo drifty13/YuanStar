@@ -23,6 +23,7 @@ import {
   type ProductOcrRunContextV1,
 } from "../src/product-ocr-import.js";
 import { buildProductReviewEvidence, buildProductReviewImageSummaries, productReviewReasonText, productReviewRowCropRect } from "../src/product-ocr-review.js";
+import { runProductOcrCommitHandoff } from "../src/product-ocr-commit-handoff.js";
 
 function expect(value: unknown, message: string): asserts value { if (!value) throw new Error(message); }
 function expectImportError(action: () => unknown, code: string): void { try { action(); } catch (error) { expect(error instanceof ProductOcrImportError && error.code === code, `expected ${code}`); return; } throw new Error(`expected ${code}`); }
@@ -166,6 +167,28 @@ expect(completedRuntimeResultForReconcile(completedRun) === completedRun.result,
 for (const status of ["cancelled", "failed", "partial"] as const) {
   const run = { jobId: "job-1", status, result: status === "partial" ? runtimeResult({ job: { ...runtimeResult().job, status: "partial" } }) : null, error: null } as BrowserOcrRuntimeRunV1;
   expect(completedRuntimeResultForReconcile(run) === null, `${status} run cannot enter the reconcile adapter`);
+}
+
+// The page only reaches the handoff after a completed, eligible result.
+for (const result of [
+  runtimeResult({ job: { ...runtimeResult().job, jobId: "stale-job" } }),
+  runtimeResult({ job: { ...runtimeResult().job, status: "partial" } }),
+  runtimeResult({ review: { status: "blocked", reasons: [] } }),
+]) expect(runtimeDraft(result).status === "blocked", "blocked result keeps pre-OCR Draft intact");
+for (const status of ["cancelled", "failed", "partial", "blocked", "account_mismatch", "revision_mismatch", "active_task_mismatch"] as const) {
+  let commits = 0, retirements = 0;
+  const run = { jobId: "job-1", status: status === "cancelled" || status === "failed" || status === "partial" ? status : "completed",
+    result: runtimeResult(), error: null } as BrowserOcrRuntimeRunV1;
+  const result = completedRuntimeResultForReconcile(run);
+  const draft = result ? runtimeDraft(result, {
+    ...(status === "account_mismatch" ? { currentAccountId: "other" } : {}),
+    ...(status === "revision_mismatch" ? { currentRevision: 5 } : {}),
+    ...(status === "active_task_mismatch" ? { activeJobId: "other" } : {}),
+  }) : null;
+  if (status === "blocked" && draft) { draft.status = "blocked"; draft.blockReasonCodes = ["analysis_blocked"]; }
+  if (draft && draft.status !== "blocked") await runProductOcrCommitHandoff({ commit: async () => { commits++; }, isCurrent: () => true,
+    applyCommitted: () => {}, retireDraft: async () => { retirements++; }, retireMemory: () => {}, usePersistedReview: () => {} });
+  expect(commits === 0 && retirements === 0 && images[0]?.file === original, `${status} never commits or retires Draft/File`);
 }
 
 let fresh = 0;

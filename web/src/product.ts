@@ -4,6 +4,7 @@ import { WorkspaceDomainError } from "./business/model";
 import { automaticReconcileResolution, buildReconcileDraftFromBrowserRuntime, type ReconcileDraftV1, type ReconcileResolutionV1 } from "./business/reconcile";
 import { ProductWorkspaceController, WorkspaceRevisionConflictError, type ProductWorkspaceContext } from "./product-workspace";
 import { ProductImportDraftController } from "./product-import-draft";
+import { reviewRunContext, reviewSourceBlob, runProductOcrCommitHandoff } from "./product-ocr-commit-handoff";
 import { startProductOcrLifecycle } from "./product-ocr-lifecycle";
 import {
   ProductOcrImportCoordinator,
@@ -197,7 +198,7 @@ function syncPendingOcrReviewFromWorkspace(options: { runContext?: ProductOcrRun
   if (!restored) { pendingOcrReview = null; return; }
   const prior = pendingOcrReview;
   const evidence = options.evidence ?? prior?.evidence ?? restored.evidence;
-  pendingOcrReview = { ...restored, evidence, runContext: options.runContext ?? prior?.runContext ?? null, persisted: options.persisted ?? true };
+  pendingOcrReview = { ...restored, evidence, runContext: reviewRunContext(options, prior?.runContext ?? null), persisted: options.persisted ?? true };
   buildProductReviewImageSummaries(restored.draft, restored.resolution, evidence).filter((item) => item.displayPriority === 0).forEach((item) => expandedReviewImages.add(item.sourceImageId));
   void preparePendingReviewRowCrops(pendingOcrReview);
 }
@@ -776,13 +777,19 @@ function reportImportDraftError(error: unknown, action = "保存"): void {
 
 function trackImportDraftWrite(write: Promise<void>): void {
   const accountId = workspaceContext?.account.accountId;
+  const generation = importDraftGeneration;
   void write.catch((error: unknown) => {
-    if (workspaceContext?.account.accountId === accountId) reportImportDraftError(error);
+    if (workspaceContext?.account.accountId === accountId && generation === importDraftGeneration) reportImportDraftError(error);
   });
 }
 
 async function restoreAccountImportDraft(accountId: string): Promise<void> {
-  const state = await importDraftController.activate(accountId);
+  const sourceImages = await workspaceController.listCurrentImages();
+  const state = await importDraftController.activate(accountId, {
+    accountId,
+    sourceImageIds: sourceImages.filter((image) => image.accountId === accountId).map((image) => image.imageId),
+    reviewSourceImageIds: Object.keys(workspaceContext?.record.snapshot.importReview.imageAudit ?? {}),
+  });
   importImages = state.images;
   overlapRelations = state.overlapPairs;
   importDraftReadyAccountId = accountId;
@@ -1630,15 +1637,16 @@ async function preparePendingReviewRowCrops(session: NonNullable<typeof pendingO
   for (const [sourceImageId, rows] of rowsByImage) for (const row of rows) reviewRowCrops.set(productReviewRowKey(sourceImageId, row), { status: "loading" });
   if (activeTab === "review") renderReview();
   await Promise.all([...rowsByImage].map(async ([sourceImageId, rows]) => {
-    const source = session.runContext?.images.find((image) => image.sourceImageId === sourceImageId);
-    const persisted = source ? null : await workspaceController.getCurrentImage(sourceImageId);
-    if (!source && !persisted) { if (pendingOcrReview === session) for (const row of rows) reviewRowCrops.set(productReviewRowKey(sourceImageId, row), { status: "failed" }); return; }
     let bitmap: ImageBitmap | null = null;
     try {
-      bitmap = await createImageBitmap(source ? source.file : persisted!.blob);
+      const blob = await reviewSourceBlob(session.runContext, sourceImageId, async (id) => (await workspaceController.getCurrentImage(id))?.blob);
+      if (pendingOcrReview !== session) return;
+      if (!blob) throw new Error("review_source_missing");
+      bitmap = await createImageBitmap(blob);
       for (const row of rows) {
         const key = productReviewRowKey(sourceImageId, row);
         const rect = productReviewRowCropRect(session.evidence, sourceImageId, row, { width: bitmap.width, height: bitmap.height });
+        if (pendingOcrReview !== session) return;
         if (!rect) { reviewRowCrops.set(key, { status: "failed" }); continue; }
         const canvas = document.createElement("canvas");
         canvas.width = rect.width; canvas.height = rect.height;
@@ -1658,14 +1666,43 @@ async function preparePendingReviewRowCrops(session: NonNullable<typeof pendingO
 
 async function commitOcrDraft(draft: ReconcileDraftV1, resolution: ReconcileResolutionV1, runContext: ProductOcrRunContextV1, evidence: ProductReviewEvidenceV1): Promise<void> {
   ocrUi.status = "committing"; ocrUi.message = "正在写入工作区。"; ocrUi.error = ""; renderPage();
+  const draftGeneration = importDraftGeneration;
+  const controllerGeneration = importDraftController.generation;
+  let invalidated = false;
   try {
-    const committed = await workspaceController.commitOcrReconcile({ sessionAccountId: runContext.accountId, draft, resolution, sourceImages: reconcileSourceImagesFromImport(runContext.images), reviewRowRects: reviewRowRectsForEvidence(evidence) });
-    applyWorkspaceContext(committed);
-    clearPendingReviewUi();
-    syncPendingOcrReviewFromWorkspace({ runContext, evidence, persisted: false });
+    const outcome = await runProductOcrCommitHandoff({
+      commit: () => workspaceController.commitOcrReconcile({ sessionAccountId: runContext.accountId, draft, resolution, sourceImages: reconcileSourceImagesFromImport(runContext.images), reviewRowRects: reviewRowRectsForEvidence(evidence) }),
+      isCurrent: () => workspaceContext?.account.accountId === runContext.accountId && importDraftController.currentAccountId === runContext.accountId &&
+        importDraftGeneration === draftGeneration + (invalidated ? 1 : 0),
+      applyCommitted: (committed) => {
+        applyWorkspaceContext(committed);
+        clearPendingReviewUi();
+        pendingOcrReview = null;
+      },
+      retireDraft: async () => {
+        importDraftTransitioning = true;
+        ++importDraftGeneration;
+        invalidated = true;
+        const result = await importDraftController.retireCommitted(runContext.accountId, controllerGeneration);
+        if (!result.retired) throw new Error("Import Draft retirement became stale");
+        if (result.cleanupError) throw result.cleanupError;
+      },
+      retireMemory: () => {
+        importDraftController.releaseImages(importImages);
+        importImages = [];
+        overlapRelations = [];
+        imageViewer?.revocableUrls.forEach((url) => URL.revokeObjectURL(url));
+        imageViewer = null;
+      },
+      usePersistedReview: () => syncPendingOcrReviewFromWorkspace({ runContext: null, evidence, persisted: true }),
+    });
+    if (outcome === "stale") return;
     reviewSaveState = "saved";
     reviewError = "";
-    ocrUi = { status: "completed", completed: runContext.images.length, total: runContext.images.length, sourceImageId: null, message: "识别结果已保存到当前工作区，可在下方补充核对。", error: "" };
+    const warning = "识别结果已保存，但待识别图片缓存清理失败；不会重复应用本次结果。";
+    ocrUi = { status: "completed", completed: runContext.images.length, total: runContext.images.length, sourceImageId: null,
+      message: outcome === "cleanup_failed" ? warning : "识别结果已保存到当前工作区，可在下方补充核对。", error: "" };
+    if (outcome === "cleanup_failed") showToast(warning);
     activeTab = "review";
     writeStorage("yuanstar.product.tab", activeTab);
     renderPage();
@@ -1684,7 +1721,7 @@ async function commitOcrDraft(draft: ReconcileDraftV1, resolution: ReconcileReso
       importNotice(error instanceof Error ? `识别结果未应用：${error.message}` : "识别结果未应用，当前工作区保持不变。", true);
     }
     renderPage();
-  }
+  } finally { importDraftTransitioning = false; }
 }
 
 async function beginOcrRun(): Promise<void> {
