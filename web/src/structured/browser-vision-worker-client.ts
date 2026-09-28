@@ -56,7 +56,7 @@ export class BrowserVisionWorkerClient implements BrowserVisionEngine {
   }
 
   private fail(reason: string): void {
-    if (this.stateValue === "failed") return;
+    if (this.stateValue === "failed" || this.stateValue === "disposed") return;
     this.stateValue = "failed";
     this.diagnosticsValue = { ...this.diagnosticsValue, state: "failed" };
     for (const pending of this.pending.values()) pending.reject(errorFor(reason));
@@ -122,7 +122,9 @@ export class BrowserVisionWorkerClient implements BrowserVisionEngine {
   async dispose(): Promise<void> {
     if (!this.worker) { this.stateValue = "disposed"; return; }
     try {
-      if (this.stateValue === "ready" || this.stateValue === "initializing") await this.request({ operation: "dispose" });
+      // An initializing Worker may be blocked on a model request. Terminate it
+      // immediately rather than waiting for a graceful dispose response.
+      if (this.stateValue === "ready") await this.request({ operation: "dispose" });
     } finally {
       this.worker?.terminate();
       this.worker = undefined;

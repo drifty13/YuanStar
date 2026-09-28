@@ -175,6 +175,8 @@ export interface BrowserBatchProgressEventV1 {
 
 export interface BrowserBatchRunOptions {
   engine?: BrowserVisionEngine;
+  /** The supplied engine was initialized by its lifecycle owner. */
+  preparedEngine?: boolean;
   createEngine?: () => BrowserVisionEngine;
   assetConfig?: VisionAssetConfig;
   signal?: AbortSignal;
@@ -539,7 +541,7 @@ export async function analyzeBrowserBatch(
   try {
     try {
       engine = options.engine ?? options.createEngine?.() ?? await createDefaultEngine();
-      await engine.initialize(options.assetConfig ?? {});
+      if (!options.preparedEngine || !options.engine) await engine.initialize(options.assetConfig ?? {});
     } catch (error) {
       for (const image of images) {
         results.push({ sourceImageId: image.sourceImageId, sourceOrder: image.sourceOrder, confirmedPool: image.confirmedPool ?? null, status: "failed", analysis: null, error: publicError(error, "engine_initialization_failed") });

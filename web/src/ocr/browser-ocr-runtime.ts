@@ -99,6 +99,9 @@ function toPublicResult(
 export class BrowserOcrRuntime {
   private stateValue: BrowserOcrRuntimeState = "idle";
   private engine: BrowserVisionEngine | null = null;
+  private preparation: Promise<void> | null = null;
+  private prepared = false;
+  private disposal: Promise<void> | null = null;
   private active: ActiveRun | null = null;
   private generation = 0;
   private disposeRequested = false;
@@ -129,20 +132,56 @@ export class BrowserOcrRuntime {
     return true;
   }
 
-  async dispose(): Promise<void> {
+  prepare(assetConfig: VisionAssetConfig = {}): Promise<void> {
+    if (this.disposeRequested) return Promise.reject(new Error("ocr_runtime_disposed"));
+    if (this.prepared) return Promise.resolve();
+    if (this.preparation) return this.preparation;
+    let engine: BrowserVisionEngine;
+    try { engine = this.engine ?? this.createEngine(); }
+    catch (error) { return Promise.reject(error); }
+    this.engine = engine;
+    const preparation = Promise.resolve().then(() => {
+      // Disposal can happen before this microtask gets to initialize a Worker.
+      if (this.disposeRequested || this.engine !== engine) throw new Error("ocr_runtime_disposed");
+      return engine.initialize(assetConfig);
+    }).then(() => {
+      if (this.disposeRequested || this.engine !== engine) throw new Error("ocr_runtime_disposed");
+      this.prepared = true;
+    }).catch(async (error: unknown) => {
+      if (this.engine === engine) {
+        this.engine = null;
+        this.prepared = false;
+        try { await engine.dispose(); } catch { /* Preserve the initialization error. */ }
+      }
+      throw error;
+    }).finally(() => {
+      if (this.preparation === preparation) this.preparation = null;
+    });
+    this.preparation = preparation;
+    // Cleanup must not create an unhandled rejection when disposal interrupts prepare.
+    void preparation.catch(() => undefined);
+    return preparation;
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposal) return this.disposal;
     this.disposeRequested = true;
     this.cancel();
     const engine = this.engine;
     this.engine = null;
-    if (engine) await engine.dispose();
-    if (!this.active) this.stateValue = "disposed";
+    this.prepared = false;
+    this.disposal = (async () => {
+      try { if (engine) await engine.dispose(); }
+      finally { this.stateValue = "disposed"; }
+    })();
+    return this.disposal;
   }
 
   async run(job: BrowserOcrRuntimeJobV1, options: BrowserOcrRuntimeRunOptionsV1 = {}, assetConfig: VisionAssetConfig = {}): Promise<BrowserOcrRuntimeRunV1> {
     if (this.active) return { jobId: job.jobId, status: "failed", result: null, error: publicError("batch_runtime_failed", "concurrent_run") };
     const invalid = validateJob(job);
     if (invalid) return { jobId: job.jobId, status: "failed", result: null, error: invalid };
-    this.disposeRequested = false;
+    if (this.disposeRequested) return { jobId: job.jobId, status: "failed", result: null, error: publicError("batch_runtime_failed", "disposed") };
 
     const controller = new AbortController();
     const externalAbort = () => { controller.abort(); this.cancel(); };
@@ -168,14 +207,24 @@ export class BrowserOcrRuntime {
       }
       this.stateValue = "initializing";
       emit("initializing");
-      this.engine ??= this.createEngine();
+      const joinedPreparation = this.preparation !== null;
       try {
-        await this.engine.initialize(assetConfig);
+        try { await this.prepare(assetConfig); }
+        catch (error) {
+          // A formal run joining a failed background attempt gets one fresh attempt.
+          if (!joinedPreparation || controller.signal.aborted || this.disposeRequested) throw error;
+          await this.prepare(assetConfig);
+        }
       } catch (error) {
+        if (controller.signal.aborted || this.disposeRequested) {
+          emit("cancelling");
+          emit("cancelled");
+          return { jobId: job.jobId, status: "cancelled", result: null, error: publicError("cancelled", "initialize") };
+        }
         this.stateValue = "failed";
         return { jobId: job.jobId, status: "failed", result: null, error: publicError(String(error).includes("worker_fatal") ? "worker_crash" : "engine_initialization_failed", "initialize") };
       }
-      if (controller.signal.aborted || !this.isCurrent(active)) {
+      if (controller.signal.aborted || !this.isCurrent(active) || this.disposeRequested || !this.engine) {
         this.stateValue = "cancelling";
         emit("cancelling");
         emit("cancelled");
@@ -202,6 +251,7 @@ export class BrowserOcrRuntime {
       };
       const run = await analyzeBrowserBatchWithResult(internalTask, {
         engine: this.engine,
+        preparedEngine: true,
         signal: controller.signal,
         onProgress: (event) => {
           if (!this.isCurrent(active)) return;
@@ -235,6 +285,11 @@ export class BrowserOcrRuntime {
         return { jobId: job.jobId, status: "failed", result: null, error: publicError("contract_generation_failed", "contract") };
       }
     } catch (error) {
+      if (controller.signal.aborted || this.disposeRequested) {
+        emit("cancelling");
+        emit("cancelled");
+        return { jobId: job.jobId, status: "cancelled", result: null, error: publicError("cancelled", "run") };
+      }
       this.stateValue = "failed";
       return { jobId: job.jobId, status: "failed", result: null, error: publicError(String(error).includes("worker_") ? "worker_crash" : "batch_runtime_failed", "run") };
     } finally {
@@ -246,9 +301,11 @@ export class BrowserOcrRuntime {
       if (wasCancelled && this.engine) {
         const engine = this.engine;
         this.engine = null;
+        this.prepared = false;
         await engine.dispose();
       }
       if (this.stateValue === "cancelling") this.stateValue = this.disposeRequested ? "disposed" : "completed";
+      if (this.disposeRequested) this.stateValue = "disposed";
     }
   }
 }

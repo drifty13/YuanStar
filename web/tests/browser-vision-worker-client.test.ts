@@ -30,6 +30,17 @@ async function expectReject(promise: Promise<unknown>, message: string): Promise
 }
 
 async function run(): Promise<void> {
+  const loadingWorker = new FakeWorker();
+  const loadingClient = new BrowserVisionWorkerClient(() => loadingWorker as unknown as Worker);
+  const loading = loadingClient.initialize({});
+  const loadingRejected = expectReject(loading, "disposing preparation must reject pending initialize");
+  const stopped = loadingClient.dispose();
+  assert(loadingWorker.terminated, "dispose during initialization must terminate without waiting for a worker response");
+  await stopped;
+  await loadingRejected;
+  assert(String(loadingClient.state) === "disposed", "late initialization rejection must not change disposed state");
+  await loadingClient.dispose();
+
   const workers: FakeWorker[] = [];
   const client = new BrowserVisionWorkerClient(() => {
     const worker = new FakeWorker();
@@ -77,6 +88,7 @@ async function run(): Promise<void> {
   third.respond(third.requests[0]!, { ok: true, result: { schemaVersion: "1.0", models: [] }, diagnostics: diagnostics() });
   await afterDispose;
   assert(String(client.state) === "ready", "explicit initialize should create a fresh worker after dispose");
+  console.log("Worker client checks passed: shared request, fatal recovery, ready dispose, pending initialize termination");
 }
 
 void run();

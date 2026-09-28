@@ -72,6 +72,7 @@ function analysis(imageId: string, includeExperience = false): BrowserImageAnaly
 class FakeEngine implements BrowserVisionEngine {
   initialized = 0;
   disposed = 0;
+  analyzed = 0;
   constructor(private readonly handler: (imageId: string) => Promise<BrowserImageAnalysisV1>, private readonly initFails = false) {}
   async initialize(_config: VisionAssetConfig): Promise<ModelManifest> {
     this.initialized += 1;
@@ -79,7 +80,7 @@ class FakeEngine implements BrowserVisionEngine {
     return { schemaVersion: "1.0", models: [] };
   }
   async classifyImage(_input: BrowserImageInput, _options?: { confirmedPool?: ConfirmedImagePool }): Promise<PageClassificationV1> { throw new Error("not used"); }
-  async analyzeImage(input: BrowserImageInput): Promise<BrowserImageAnalysisV1> { return this.handler(input.imageId); }
+  async analyzeImage(input: BrowserImageInput): Promise<BrowserImageAnalysisV1> { this.analyzed++; return this.handler(input.imageId); }
   async dispose(): Promise<void> { this.disposed += 1; }
 }
 
@@ -100,6 +101,7 @@ const normalProgress: string[] = [];
 const normalRuntime = new BrowserOcrRuntime({ createEngine: () => normalEngine, now: () => new Date("2026-08-13T00:00:00.000Z") });
 const normal = await normalRuntime.run(job(), { onProgress: (event) => normalProgress.push(event.phase) });
 equal(normal.status, "completed", "a complete local batch must complete");
+equal(normalEngine.initialized, 1, "runtime and batch must initialize the same engine only once");
 expect(normal.result != null, "a successful batch must return a public contract");
 expect(normalProgress.includes("initializing") && normalProgress.includes("image_completed") && normalProgress.includes("completed"), "progress must originate from initialization and image execution");
 expect(normal.result.occurrences.some((item) => item.kind === "experience" && (item.occurrence as BrowserImageAnalysisV1["experienceOccurrences"][number]).quantity === 12), "experience quantities must survive the runtime contract");
@@ -144,6 +146,129 @@ equal(next.status, "completed", "a new job must run after cancelled work is rele
 const failedRuntime = new BrowserOcrRuntime({ createEngine: () => new FakeEngine(async (imageId) => analysis(imageId), true) });
 const failed = await failedRuntime.run(job("init-failure"));
 equal(failed.error?.code, "engine_initialization_failed", "initialization failure must use a public runtime error code");
+
+function deferred<T>() {
+  let resolve!: (value: T) => void, reject!: (reason: Error) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+async function rejects(promise: Promise<unknown>, message: string): Promise<void> {
+  try { await promise; } catch { return; }
+  throw new Error(message);
+}
+const manifest: ModelManifest = { schemaVersion: "1.0", models: [] };
+class PreparingEngine extends FakeEngine {
+  readonly ready = deferred<ModelManifest>();
+  async initialize(): Promise<ModelManifest> { this.initialized++; return this.ready.promise; }
+}
+
+const preparedEngine = new PreparingEngine(async (id) => analysis(id));
+let preparedCreations = 0;
+const preparedRuntime = new BrowserOcrRuntime({ createEngine: () => { preparedCreations++; return preparedEngine; } });
+const firstPreparation = preparedRuntime.prepare();
+expect(preparedRuntime.prepare() === firstPreparation, "concurrent prepare must return the identical shared Promise");
+await Promise.resolve();
+equal(preparedEngine.initialized, 1, "no-image prepare initializes once");
+equal(preparedEngine.analyzed, 0, "prepare must never analyze images or create business results");
+equal(preparedRuntime.state, "idle", "background preparation must not change formal run UI state");
+preparedEngine.ready.resolve(manifest);
+await firstPreparation;
+await preparedRuntime.prepare();
+equal((await preparedRuntime.run(job("prepared-first"))).status, "completed", "run after prepare succeeds");
+equal((await preparedRuntime.run(job("prepared-second"))).status, "completed", "successive runs reuse prepared runtime");
+equal([preparedCreations, preparedEngine.initialized, preparedEngine.analyzed], [1, 1, 4], "prepared runs create/initialize once and process every requested image");
+await Promise.all([preparedRuntime.dispose(), preparedRuntime.dispose()]);
+equal(preparedEngine.disposed, 1, "repeated dispose releases the engine once");
+await rejects(preparedRuntime.prepare(), "disposed runtime must reject prepare");
+equal((await preparedRuntime.run(job("after-dispose"))).error?.debugContext?.phase, "disposed", "disposed runtime cannot be revived by run");
+
+const joiningEngine = new PreparingEngine(async (id) => analysis(id));
+let joiningCreations = 0;
+const joiningRuntime = new BrowserOcrRuntime({ createEngine: () => { joiningCreations++; return joiningEngine; } });
+const joiningPrepare = joiningRuntime.prepare();
+const joiningRun = joiningRuntime.run(job("joins-background"));
+await Promise.resolve();
+equal([joiningCreations, joiningEngine.initialized, joiningEngine.analyzed], [1, 1, 0], "run waits on background prepare without extra engine/initialization");
+joiningEngine.ready.resolve(manifest);
+await joiningPrepare;
+equal((await joiningRun).status, "completed", "joined run proceeds into OCR after initialization");
+equal(joiningEngine.initialized, 1, "batch must not initialize a prepared joined engine again");
+await joiningRuntime.dispose();
+
+for (const retryVia of ["prepare", "run"] as const) {
+  const broken = new FakeEngine(async (id) => analysis(id), true);
+  const recovered = new FakeEngine(async (id) => analysis(id));
+  let creations = 0;
+  const runtime = new BrowserOcrRuntime({ createEngine: () => ++creations === 1 ? broken : recovered });
+  await rejects(runtime.prepare(), "initial background prepare must reject");
+  equal(runtime.state, "idle", "failed background prepare must leave formal UI idle");
+  equal(broken.disposed, 1, "failed prepare must release its engine");
+  if (retryVia === "prepare") await runtime.prepare();
+  equal((await runtime.run(job(`retry-via-${retryVia}`))).status, "completed", "later prepare/run must retry initialization then execute OCR");
+  equal([creations, broken.initialized, recovered.initialized], [2, 1, 1], "failed Promise must not be cached forever");
+  await runtime.dispose();
+  equal([broken.disposed, recovered.disposed], [1, 1], "failure and final disposal each release their own engine once");
+}
+
+const failedJoinEngine = new PreparingEngine(async (id) => analysis(id));
+const retryJoinEngine = new FakeEngine(async (id) => analysis(id));
+let joinedAttempts = 0;
+const failedJoinRuntime = new BrowserOcrRuntime({ createEngine: () => ++joinedAttempts === 1 ? failedJoinEngine : retryJoinEngine });
+const failedJoinPreparation = rejects(failedJoinRuntime.prepare(), "background failure is observable to its caller");
+const failedJoinRun = failedJoinRuntime.run(job("joined-retry"));
+failedJoinEngine.ready.reject(new Error("model network unavailable"));
+await failedJoinPreparation;
+equal((await failedJoinRun).status, "completed", "formal run joining a failed background attempt retries once");
+equal([joinedAttempts, failedJoinEngine.disposed, retryJoinEngine.initialized], [2, 1, 1], "joined failure must safely replace failed engine");
+await failedJoinRuntime.dispose();
+
+const exhaustedEngine = new PreparingEngine(async (id) => analysis(id));
+let exhaustedAttempts = 0;
+const exhaustedRuntime = new BrowserOcrRuntime({ createEngine: () => ++exhaustedAttempts === 1 ? exhaustedEngine : new FakeEngine(async (id) => analysis(id), true) });
+const exhaustedPreparation = rejects(exhaustedRuntime.prepare(), "joined background preparation fails");
+const exhaustedRun = exhaustedRuntime.run(job("joined-retry-exhausted"));
+exhaustedEngine.ready.reject(new Error("model unavailable"));
+await exhaustedPreparation;
+const exhausted = await exhaustedRun;
+equal([exhaustedAttempts, exhausted.status, exhausted.error?.code, exhausted.error?.debugContext?.phase], [2, "failed", "engine_initialization_failed", "initialize"], "a failed joined retry reports the existing initialization error without endless retries");
+await exhaustedRuntime.dispose();
+
+for (const initializeStarted of [false, true]) {
+  const pendingEngine = new PreparingEngine(async (id) => analysis(id));
+  const pendingRuntime = new BrowserOcrRuntime({ createEngine: () => pendingEngine });
+  const pendingPrepare = rejects(pendingRuntime.prepare(), "dispose must prevent late prepare from reviving runtime");
+  if (initializeStarted) await Promise.resolve();
+  await Promise.all([pendingRuntime.dispose(), pendingRuntime.dispose()]);
+  pendingEngine.ready.resolve(manifest);
+  await pendingPrepare;
+  equal([pendingEngine.initialized, pendingEngine.disposed, pendingEngine.analyzed], [initializeStarted ? 1 : 0, 1, 0], "dispose before/during prepare must release once without OCR");
+  equal(pendingRuntime.state, "disposed", "late completion leaves runtime disposed");
+}
+
+const cancellationEngine = new PreparingEngine(async (id) => analysis(id));
+const cancellationRuntime = new BrowserOcrRuntime({ createEngine: () => cancellationEngine });
+const cancellationPrepare = cancellationRuntime.prepare();
+const cancellationRun = cancellationRuntime.run(job("cancel-during-prepare"));
+expect(cancellationRuntime.cancel(), "formal run can cancel while it waits for background prepare");
+cancellationEngine.ready.resolve(manifest);
+await cancellationPrepare;
+equal((await cancellationRun).status, "cancelled", "prepare/run join must preserve formal cancellation semantics");
+equal([cancellationEngine.analyzed, cancellationEngine.disposed], [0, 1], "cancelled joined run must release engine and never begin images");
+await cancellationRuntime.dispose();
+equal(cancellationEngine.disposed, 1, "dispose after cancellation must not release the engine twice");
+
+const exitEngine = new PreparingEngine(async (id) => analysis(id));
+const exitRuntime = new BrowserOcrRuntime({ createEngine: () => exitEngine });
+const exitPreparation = rejects(exitRuntime.prepare(), "page exit interrupts pending prepare");
+const exitRun = exitRuntime.run(job("exit-during-prepare"));
+await Promise.resolve();
+await exitRuntime.dispose();
+exitEngine.ready.reject(new Error("worker_disposed"));
+await exitPreparation;
+equal((await exitRun).status, "cancelled", "page exit during joined prepare cancels the formal run");
+equal([exitEngine.disposed, exitEngine.analyzed], [1, 0], "page exit releases once and prevents OCR");
+equal(exitRuntime.state, "disposed", "run cleanup cannot overwrite page disposal");
+console.log("P4 runtime preparation checks passed: shared Promise, reuse, retries, cancellation, disposal races");
 
 equal(isOcrPerfDiagnosticsEnabled(""), false, "performance diagnostics must be disabled without the URL flag");
 equal(isOcrPerfDiagnosticsEnabled("?ocrPerf=1"), true, "performance diagnostics must be enabled by the URL flag");

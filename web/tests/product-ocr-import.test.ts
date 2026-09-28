@@ -1,6 +1,7 @@
 import { createStarCatalog } from "../src/business/catalog.js";
 import { buildReconcileDraftFromBrowserRuntime, finalizeReconcileDraft } from "../src/business/reconcile.js";
 import type { BrowserAnalysisResultV1, BrowserOcrRuntimeRunV1 } from "../src/ocr/browser-analysis-contract.js";
+import { BrowserOcrRuntime } from "../src/ocr/browser-ocr-runtime.js";
 import type { BrowserImageInput, BrowserVisionEngine, ModelManifest, PageClassificationV1 } from "../src/structured/contracts.js";
 import {
   ProductOcrImportCoordinator,
@@ -131,7 +132,7 @@ expect(commitSources[0]!.blob === original && commitSources[0]!.sourceImageId ==
 
 // The stub deliberately fails recognition; only an explicit run may reach it.
 const formalRun = await classificationCoordinator.run({ ...runContext, images: [pairedImages[0]!], overlapPairs: [] }, () => {});
-expect(Number(fakeEngine.initializeCalls) === 2 && Number(fakeEngine.recognizeCalls) === 1 && fakeEngine.classificationCalls.length === 0, "formal run retains runtime and batch initialization and invokes recognition with the confirmed pool");
+expect(Number(fakeEngine.initializeCalls) === 1 && Number(fakeEngine.recognizeCalls) === 1 && fakeEngine.classificationCalls.length === 0, "formal run initializes once at runtime ownership and invokes recognition with the confirmed pool");
 expect(formalRun.status === "failed" && formalRun.result === null && formalRun.error?.code === "image_analysis_failed" && classificationCoordinator.active === null, "formal OCR failure retains the existing runtime result and context cleanup");
 expect(visualClassificationCalls.length === 3, "formal run does not substitute the visual suggestion classifier for OCR");
 
@@ -195,4 +196,48 @@ const oldWorkspace = JSON.stringify(finalized.workspace);
 const abandonedPending = { draft: reviewDraft, resolution: {}, oldWorkspace };
 expect(abandonedPending.oldWorkspace === oldWorkspace && JSON.stringify(finalized.workspace) === oldWorkspace, "discarding an in-memory pending review leaves the committed workspace unchanged");
 
+let releasePrepare!: () => void;
+const prepareGate = new Promise<void>((resolve) => { releasePrepare = resolve; });
+const backgroundEngine = new FakeClassificationEngine();
+backgroundEngine.initialize = async () => { backgroundEngine.initializeCalls++; await prepareGate; return { schemaVersion: "1.0", models: [] }; };
+const backgroundCoordinator = new ProductOcrImportCoordinator({ engine: backgroundEngine, classifyImportImage: async () => classification("support") });
+const background = backgroundCoordinator.prepare();
+expect(backgroundCoordinator.prepare() === background, "coordinator prepare is a thin forwarder preserving runtime's shared Promise");
+const independentSuggestion = await backgroundCoordinator.classify(images[0]!);
+expect(independentSuggestion.pageType === "support" && !backgroundCoordinator.classificationPending, "visual suggestion must resolve while OCR preparation is still pending");
+expect(backgroundEngine.initializeCalls === 1 && backgroundEngine.classificationCalls.length === 0 && backgroundEngine.recognizeCalls === 0, "background initialization is independent of visual classify's zero OCR calls");
+releasePrepare(); await background; await backgroundCoordinator.dispose();
+
+const failedBackgroundEngine = new FakeClassificationEngine();
+failedBackgroundEngine.initialize = async () => { failedBackgroundEngine.initializeCalls++; throw new Error("model unavailable"); };
+const failedBackgroundCoordinator = new ProductOcrImportCoordinator({ engine: failedBackgroundEngine, classifyImportImage: async () => classification("experience") });
+await failedBackgroundCoordinator.prepare().catch(() => undefined);
+expect((await failedBackgroundCoordinator.classify(images[0]!)).pageType === "experience", "background prepare failure must not break visual recommendations");
+expect(failedBackgroundEngine.initializeCalls === 1 && failedBackgroundEngine.classificationCalls.length === 0 && failedBackgroundEngine.recognizeCalls === 0, "visual classify after failed prepare must not retry or perform OCR");
+await failedBackgroundCoordinator.dispose();
+
+let runtimeCreations = 0, initializes = 0, analyzes = 0, disposes = 0;
+const accountEngine: BrowserVisionEngine = {
+  initialize: async () => { initializes++; return { schemaVersion: "1.0", models: [] }; },
+  classifyImage: async () => { throw new Error("visual classify must bypass this engine"); },
+  analyzeImage: async (input) => {
+    analyzes++;
+    const absent = { value: null, status: "not_present", confidence: null, rawText: null, normalizedText: null, evidence: [], reviewReasonCodes: [] };
+    return { ...runtimeResult().images[0]!.analysis!, imageId: input.imageId,
+      inventoryHeader: { roi: { x: 0, y: 0, width: 0, height: 0 }, tokens: [], currentCount: absent, capacity: absent },
+      timings: { ocrSessionCreationCount: 0, totalMs: 0 } } as any;
+  },
+  dispose: async () => { disposes++; },
+};
+const accountRuntime = new BrowserOcrRuntime({ createEngine: () => { runtimeCreations++; return accountEngine; } });
+const accountCoordinator = new ProductOcrImportCoordinator({ runtime: accountRuntime, classifyImportImage: async () => classification("main") });
+await accountCoordinator.prepare();
+for (const accountId of ["account-A", "account-B"]) {
+  const accountRun = await accountCoordinator.run({ ...runContext, jobId: accountId, accountId, images: [pairedImages[0]!], overlapPairs: [] }, () => undefined);
+  expect(accountRun.status === "completed" && accountCoordinator.active === null, "formal coordinator success must survive account context changes");
+}
+expect(runtimeCreations === 1 && initializes === 1 && analyzes === 2 && disposes === 0, "account A to B must reuse the page runtime without dispose/reprepare");
+await accountCoordinator.dispose(); await accountCoordinator.dispose();
+expect(Number(disposes) === 1, "coordinator disposal must release its runtime engine once");
+console.log("P4 coordinator checks passed: thin prepare, visual independence, account reuse, formal success");
 console.log("Step 2B product import state, runtime job, public-result adapter, review and safety checks passed");

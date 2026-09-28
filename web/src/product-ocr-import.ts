@@ -264,20 +264,20 @@ export function isReconcileResolutionComplete(draft: ReconcileDraftV1, resolutio
 
 export class ProductOcrImportCoordinator {
   private activeContext: ProductOcrRunContextV1 | null = null;
-  private readonly engine: BrowserVisionEngine;
   private readonly runtime: BrowserOcrRuntime;
   private readonly classifyImportImage: (image: ProductImportImage) => Promise<PageClassificationV1>;
   private classificationQueue: Promise<void> = Promise.resolve();
   private pendingClassificationCount = 0;
 
   constructor(options: { engine?: BrowserVisionEngine; runtime?: BrowserOcrRuntime; classifyImportImage?: (image: ProductImportImage) => Promise<PageClassificationV1> } = {}) {
-    this.engine = options.engine ?? new BrowserVisionWorkerClient();
-    this.runtime = options.runtime ?? new BrowserOcrRuntime({ createEngine: () => this.engine });
+    this.runtime = options.runtime ?? new BrowserOcrRuntime({ createEngine: () => options.engine ?? new BrowserVisionWorkerClient() });
     this.classifyImportImage = options.classifyImportImage ?? classifyProductImportImageVisual;
   }
 
   get active(): ProductOcrRunContextV1 | null { return this.activeContext; }
   get classificationPending(): boolean { return this.pendingClassificationCount > 0; }
+
+  prepare(): Promise<void> { return this.runtime.prepare(); }
 
   async classify(image: ProductImportImage): Promise<PageClassificationV1> {
     if (this.activeContext) throw new ProductOcrImportError("ocr_already_running", "识别运行期间不能重新判断图片类型。");
@@ -298,5 +298,5 @@ export class ProductOcrImportCoordinator {
   }
 
   cancel(): boolean { return this.runtime.cancel(); }
-  async dispose(): Promise<void> { await this.classificationQueue; await this.runtime.dispose(); this.activeContext = null; }
+  async dispose(): Promise<void> { await this.runtime.dispose(); await this.classificationQueue; this.activeContext = null; }
 }

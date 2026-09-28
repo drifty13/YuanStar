@@ -110,6 +110,16 @@ await analyzeBrowserBatch(task(["owned"]), { createEngine: () => owned });
 equal(owned.initialized, 1, "internally created engine must initialize once");
 equal(owned.disposed, 1, "internally created engine must be disposed in finally");
 
+const prepared = new FakeEngine(async (id) => analysis(id));
+await prepared.initialize({});
+await analyzeBrowserBatch(task(["prepared"]), { engine: prepared, preparedEngine: true });
+equal(prepared.initialized, 1, "batch must trust an explicitly prepared caller-owned engine");
+equal(prepared.disposed, 0, "prepared engine remains runtime-owned after batch completion");
+const ownedWithFlag = new FakeEngine(async (id) => analysis(id));
+await analyzeBrowserBatch(task(["owned-flag"]), { createEngine: () => ownedWithFlag, preparedEngine: true });
+equal(ownedWithFlag.initialized, 1, "prepared flag cannot skip initialization for a batch-created engine");
+equal(ownedWithFlag.disposed, 1, "batch-created engine still disposes with prepared flag");
+
 const auditEngine = new FakeEngine(async (id) => analysis(id));
 await analyzeBrowserBatch(task(["audit"]), { engine: auditEngine, variantAudit: true });
 equal(auditEngine.calls.map((call) => call.variantAudit), [true], "audit batches must propagate force-full mode to the image engine");

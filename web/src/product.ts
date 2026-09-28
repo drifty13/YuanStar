@@ -4,6 +4,7 @@ import { WorkspaceDomainError } from "./business/model";
 import { automaticReconcileResolution, buildReconcileDraftFromBrowserRuntime, type ReconcileDraftV1, type ReconcileResolutionV1 } from "./business/reconcile";
 import { ProductWorkspaceController, WorkspaceRevisionConflictError, type ProductWorkspaceContext } from "./product-workspace";
 import { ProductImportDraftController } from "./product-import-draft";
+import { startProductOcrLifecycle } from "./product-ocr-lifecycle";
 import {
   ProductOcrImportCoordinator,
   ProductOcrImportError,
@@ -1907,6 +1908,7 @@ function bindGlobalPaste(): void {
 bindGlobalPaste();
 displayLocaleAdapter.start();
 renderPage();
+startProductOcrLifecycle(ocrCoordinator);
 void loadExperienceRules();
 void loadProductWorkspace();
 window.addEventListener("pagehide", () => importDraftController.releaseAll());
