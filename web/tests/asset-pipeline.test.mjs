@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { copyOcrAssets, REQUIRED_OCR_ASSET_FILENAMES, verifyOcrAssets } from "../scripts/copy-runtime-assets.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
-const fixtureRoot = await mkdtemp(join(tmpdir(), "yuanstar-ocr-assets-"));
+const testRoot = new URL("../.tmp/test/", import.meta.url);
+await mkdir(testRoot, { recursive: true });
+const fixtureRoot = await mkdtemp(join(fileURLToPath(testRoot), "assets-"));
 const sourceDir = join(fixtureRoot, "source");
 const destinationDir = join(fixtureRoot, "staging");
 
 try {
-  await verifyOcrAssets();
   await mkdir(sourceDir, { recursive: true });
   const assets = await Promise.all(REQUIRED_OCR_ASSET_FILENAMES.map(async (filename, index) => {
     const bytes = Buffer.from(`fixture:${filename}:${index}`, "utf8");

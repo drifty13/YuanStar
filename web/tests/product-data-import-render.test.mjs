@@ -4,7 +4,7 @@ function expect(value, message) {
   if (!value) throw new Error(message);
 }
 
-const productSource = readFileSync(new URL("../src/product.ts", import.meta.url), "utf8");
+const productSource = readFileSync(new URL("../src/product.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const prepareImport = productSource.match(/async function prepareDataImport\(file: File\): Promise<void> \{[\s\S]*?\n\}\n\nasync function confirmDataImport/);
 
 expect(prepareImport, "data import preparation must remain a distinct UI boundary");
