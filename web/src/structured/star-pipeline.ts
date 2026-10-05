@@ -2,6 +2,8 @@ import { getOcrRuntimeMetrics, prepareRectVariants, recognizePreparedRectVariant
 import { createOccurrenceId } from "../utils/id.js";
 import { buildCardCandidates, findCircleProposals } from "./main-grid.js";
 import { createScreenshotProfile } from "./profiles.js";
+import { classifyPageVisual } from "./page-routing-visual.js";
+import { refineStarContentBounds } from "./star-content-bounds.js";
 import { classifyStarResultStatus, resolveLevel, type NameResolution } from "./star-postprocess.js";
 import { applyHierarchicalNameSandwich, applyHierarchicalOrder, recognizeEquippedOnDemand } from "./hierarchical-postprocess.js";
 import { recognizeQuality } from "./quality-postprocess.js";
@@ -38,9 +40,12 @@ export async function runStructuredStar(file: File, resolveName: NameResolver, o
   try {
   const decodedAt = performance.now();
   const imageData = prepared?.imageData ?? imageDataForBitmap(bitmap);
-  const profile = prepared?.profile ?? createScreenshotProfile(imageData);
+  const baseProfile = prepared?.profile ?? createScreenshotProfile(imageData);
   const profiledAt = performance.now();
-  const proposals = findCircleProposals(imageData, profile);
+  const proposals = findCircleProposals(imageData, baseProfile);
+  const profile = proposals.length
+    ? refineStarContentBounds(baseProfile, classifyPageVisual(imageData, baseProfile.viewport).rect)
+    : baseProfile;
   const candidates = buildCardCandidates(proposals, profile);
   const griddedAt = performance.now();
   const results: StructuredMainOutput["results"] = [];

@@ -18,7 +18,11 @@ export function boxesForCircle(circle: CircleProposal): { cardRect: Rect; discRe
 
 export function classifyCompleteness(circle: CircleProposal, profile: ScreenshotProfile): { completeness: Completeness; evidence: string[] } {
   const boxes = boxesForCircle(circle);
-  const horizontal = { x: profile.viewport.x, y: profile.contentBounds.y, width: profile.viewport.width, height: profile.contentBounds.height };
+  const left = Math.max(0, profile.viewport.x, profile.contentBounds.x);
+  const top = Math.max(0, profile.viewport.y, profile.contentBounds.y);
+  const right = Math.min(profile.imageWidth, profile.viewport.x + profile.viewport.width, profile.contentBounds.x + profile.contentBounds.width);
+  const bottom = Math.min(profile.imageHeight, profile.viewport.y + profile.viewport.height, profile.contentBounds.y + profile.contentBounds.height);
+  const horizontal = { x: left, y: top, width: right - left, height: bottom - top };
   const parts = [boxes.discRect, boxes.nameRect, boxes.levelRect];
   if (parts.some((rect) => rect.x < horizontal.x || rect.x + rect.width > horizontal.x + horizontal.width)) {
     return { completeness: "invalid", evidence: ["horizontal_bounds_exceeded"] };
