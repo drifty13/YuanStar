@@ -1741,7 +1741,9 @@ async function beginOcrRun(): Promise<void> {
       ocrUi.status = "cancelled"; ocrUi.sourceImageId = null; importNotice("已取消本次识别，当前工作区未修改。"); renderPage(); return;
     }
     if (run.status === "failed" || !run.result) {
-      ocrUi.status = "failed"; ocrUi.sourceImageId = null; importNotice(`识别失败，当前工作区未修改，可直接重试。${run.error?.message ? ` ${run.error.message}` : ""}`, true); renderPage(); return;
+      ocrUi.status = "failed"; ocrUi.sourceImageId = null;
+      importNotice(run.error?.code === "engine_initialization_timeout" ? "OCR 初始化超时，可以重试。" : `识别失败，当前工作区未修改，可直接重试。${run.error?.message ? ` ${run.error.message}` : ""}`, true);
+      renderPage(); return;
     }
     if (run.status === "partial" || run.result.job.status === "partial") {
       ocrUi.status = "failed"; ocrUi.sourceImageId = null; importNotice("本次识别未完整完成，请重试。", true); renderPage(); return;

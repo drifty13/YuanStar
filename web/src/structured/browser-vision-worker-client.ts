@@ -16,10 +16,13 @@ function defaultWorkerFactory(): Worker {
   return new Worker(new URL("./browser-vision-worker.ts", import.meta.url), { type: "module", name: "yuanstar-browser-vision" });
 }
 
-function errorFor(message: string): Error { return new Error(message); }
+export const WORKER_INITIALIZATION_TIMEOUT_MS = 300_000;
+
+function errorFor(message: string): Error { return Object.assign(new Error(message), { code: message.split(":", 1)[0] }); }
 
 export class BrowserVisionWorkerClient implements BrowserVisionEngine {
   private worker: Worker | undefined;
+  private initializeTimer: ReturnType<typeof setTimeout> | undefined;
   private stateValue: ClientState = "idle";
   private sequence = 0;
   private pending = new Map<string, PendingRequest>();
@@ -39,9 +42,9 @@ export class BrowserVisionWorkerClient implements BrowserVisionEngine {
 
   private createWorker(): Worker {
     const worker = this.workerFactory();
-    worker.onmessage = (event: MessageEvent<BrowserVisionWorkerResponse>) => this.handleResponse(event.data);
-    worker.onerror = () => this.fail("worker_fatal_error");
-    worker.onmessageerror = () => this.fail("worker_message_error");
+    worker.onmessage = (event: MessageEvent<BrowserVisionWorkerResponse>) => { if (this.worker === worker) this.handleResponse(event.data); };
+    worker.onerror = () => { if (this.worker === worker) this.fail("worker_fatal_error"); };
+    worker.onmessageerror = () => { if (this.worker === worker) this.fail("worker_message_error"); };
     this.worker = worker;
     return worker;
   }
@@ -57,6 +60,7 @@ export class BrowserVisionWorkerClient implements BrowserVisionEngine {
 
   private fail(reason: string): void {
     if (this.stateValue === "failed" || this.stateValue === "disposed") return;
+    this.clearInitializeTimer();
     this.stateValue = "failed";
     this.diagnosticsValue = { ...this.diagnosticsValue, state: "failed" };
     for (const pending of this.pending.values()) pending.reject(errorFor(reason));
@@ -65,6 +69,11 @@ export class BrowserVisionWorkerClient implements BrowserVisionEngine {
     this.worker = undefined;
     this.initializePromise = undefined;
     this.manifest = undefined;
+  }
+
+  private clearInitializeTimer(): void {
+    if (this.initializeTimer !== undefined) clearTimeout(this.initializeTimer);
+    this.initializeTimer = undefined;
   }
 
   private request(request: ClientRequest): Promise<BrowserVisionWorkerSuccess> {
@@ -86,20 +95,29 @@ export class BrowserVisionWorkerClient implements BrowserVisionEngine {
     if (this.stateValue === "disposed" || this.stateValue === "failed") this.stateValue = "idle";
     if (this.stateValue !== "idle") throw errorFor("worker_runtime_unavailable: initialize is not allowed in the current state");
     this.stateValue = "initializing";
+    let worker: Worker | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      this.createWorker();
+      worker = this.createWorker();
+      timer = setTimeout(() => {
+        if (this.worker === worker && this.stateValue === "initializing") this.fail("worker_initialization_timeout");
+      }, WORKER_INITIALIZATION_TIMEOUT_MS);
+      this.initializeTimer = timer;
       this.initializePromise = this.request({ operation: "initialize", config }).then((result) => {
+        if (this.worker !== worker || this.stateValue !== "initializing") throw errorFor("worker_disposed");
         this.manifest = result as ModelManifest;
         this.stateValue = "ready";
         return this.manifest;
       }).catch((error: Error) => {
-        this.fail(error.message);
+        if (this.worker === worker) this.fail(error.message);
         throw error;
       });
       return await this.initializePromise;
     } catch (error) {
-      this.fail(error instanceof Error ? error.message : String(error));
+      if (this.worker === worker) this.fail(error instanceof Error ? error.message : String(error));
       throw error;
+    } finally {
+      if (this.initializeTimer === timer) this.clearInitializeTimer();
     }
   }
 
@@ -120,6 +138,7 @@ export class BrowserVisionWorkerClient implements BrowserVisionEngine {
   }
 
   async dispose(): Promise<void> {
+    this.clearInitializeTimer();
     if (!this.worker) { this.stateValue = "disposed"; return; }
     try {
       // An initializing Worker may be blocked on a model request. Terminate it

@@ -77,6 +77,7 @@ export interface BrowserOcrRuntimeErrorV1 {
   code:
     | "invalid_input"
     | "engine_initialization_failed"
+    | "engine_initialization_timeout"
     | "image_analysis_failed"
     | "batch_runtime_failed"
     | "worker_crash"

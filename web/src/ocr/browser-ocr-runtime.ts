@@ -44,6 +44,7 @@ function publicError(
   const messageByCode: Record<BrowserOcrRuntimeErrorV1["code"], string> = {
     invalid_input: "Browser OCR input is invalid.",
     engine_initialization_failed: "The local OCR worker could not initialize.",
+    engine_initialization_timeout: "The local OCR worker initialization timed out. Please retry.",
     image_analysis_failed: "One or more images could not be analyzed.",
     batch_runtime_failed: "The local OCR batch did not complete.",
     worker_crash: "The local OCR worker stopped unexpectedly.",
@@ -51,6 +52,10 @@ function publicError(
     contract_generation_failed: "The OCR result could not be prepared for review.",
   };
   return { code, message: messageByCode[code], retryable: code !== "invalid_input" && code !== "cancelled", debugContext: { phase, ...(sourceImageId ? { sourceImageId } : {}) } };
+}
+
+function isInitializationTimeout(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "worker_initialization_timeout";
 }
 
 function validateJob(job: BrowserOcrRuntimeJobV1): BrowserOcrRuntimeErrorV1 | null {
@@ -212,7 +217,7 @@ export class BrowserOcrRuntime {
         try { await this.prepare(assetConfig); }
         catch (error) {
           // A formal run joining a failed background attempt gets one fresh attempt.
-          if (!joinedPreparation || controller.signal.aborted || this.disposeRequested) throw error;
+          if (!joinedPreparation || controller.signal.aborted || this.disposeRequested || isInitializationTimeout(error)) throw error;
           await this.prepare(assetConfig);
         }
       } catch (error) {
@@ -222,7 +227,7 @@ export class BrowserOcrRuntime {
           return { jobId: job.jobId, status: "cancelled", result: null, error: publicError("cancelled", "initialize") };
         }
         this.stateValue = "failed";
-        return { jobId: job.jobId, status: "failed", result: null, error: publicError(String(error).includes("worker_fatal") ? "worker_crash" : "engine_initialization_failed", "initialize") };
+        return { jobId: job.jobId, status: "failed", result: null, error: publicError(isInitializationTimeout(error) ? "engine_initialization_timeout" : String(error).includes("worker_fatal") ? "worker_crash" : "engine_initialization_failed", "initialize") };
       }
       if (controller.signal.aborted || !this.isCurrent(active) || this.disposeRequested || !this.engine) {
         this.stateValue = "cancelling";
