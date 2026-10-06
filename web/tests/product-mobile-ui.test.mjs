@@ -50,12 +50,12 @@ function harness() {
   const root = { querySelector: () => null, querySelectorAll: (selector) =>
     selector === "[data-import-image]" ? cards : selector === "[data-import-pool]" ? pools :
       selector === ".is-drag-target" ? pools.filter((p) => p.classes.has("is-drag-target")) : nodes.get(selector) ?? [] };
-  const timers = new Map(), moves = [], saved = [];
+  const timers = new Map(), timerDelays = [], moves = [], saved = [];
   let timerId = 0;
   const context = vm.createContext({ console, Element, HTMLSelectElement: class {},
     ProductWorkspaceController: class {}, ProductOcrImportCoordinator: class {}, ProductImportDraftController: class {},
     createDisplayLocaleAdapter: () => ({ apply() {} }), window: { localStorage: { getItem: () => null } },
-    setTimeout: (callback) => { timers.set(++timerId, callback); return timerId; }, clearTimeout: (id) => timers.delete(id),
+    setTimeout: (callback, delay) => { timerDelays.push(delay); timers.set(++timerId, callback); return timerId; }, clearTimeout: (id) => timers.delete(id),
     document: { elementFromPoint: () => target },
     __root: root, __moves: moves, __saved: saved,
     productReviewCandidateActions: () => ["view_source", "keep", "ignore", "edit"], productReviewKeepActionLabel: () => "保留",
@@ -72,7 +72,7 @@ function harness() {
       mutation({ editOccurrence: (occurrenceId, fields) => __saved.push({ occurrenceId, fields }) }); after(false); renderReview();
     };`);
   const activateHold = () => { for (const [id, callback] of timers) { timers.delete(id); callback(); } };
-  return { run, cards, pools, nodes, timers, moves, saved, activateHold, target: (pool) => { target = pool; } };
+  return { run, cards, pools, nodes, timers, timerDelays, moves, saved, activateHold, target: (pool) => { target = pool; } };
 }
 const touch = (x = 20, y = 30) => ({ identifier: 1, clientX: x, clientY: y });
 
@@ -131,4 +131,31 @@ for (const surface of ["thumbnail", "caption"]) {
   h.cards[0].fire("touchmove", { touches: [touch(80, 90)] });
   h.cards[0].fire("touchend", { changedTouches: [touch(80, 90)] }); assert.equal(h.moves.length, 0);
 }
-console.log("PASS touch hold, scroll, tap, delete, cancel, OCR lock and desktop DnD");
+
+{
+  const h = harness(); h.run("bindImportControls()");
+  h.cards[0].fire("touchstart", { touches: [touch()] });
+  assert.equal(h.timerDelays.at(-1), 350, "hold activation delay is 350ms");
+  h.cards[0].fire("touchmove", { touches: [touch(28, 30)] });
+  assert.equal(h.timers.size, 1, "8px incidental movement retains the hold");
+  h.cards[0].fire("touchmove", { touches: [touch(29, 30)] });
+  assert.equal(h.timers.size, 0, "movement beyond 8px yields to browser scroll");
+  h.cards[0].fire("touchstart", { touches: [touch()] }); h.activateHold();
+  h.run("isOcrLocked = () => true");
+  h.cards[0].fire("touchend", { changedTouches: [touch(50, 80)] });
+  assert.equal(h.moves.length, 0, "locking before release prevents the classification action");
+}
+{
+  const h = harness();
+  const remove = new Element({ deleteImage: "image-main" });
+  const preview = new Element({ previewImage: "image-main" });
+  h.nodes.set("[data-delete-image]", [remove]); h.nodes.set("[data-preview-image]", [preview]);
+  h.run("bindImportControls()");
+  h.run("removeImportImage = id => __moves.push(['delete', id]); setPreviewImage = id => __saved.push(id)");
+  h.cards[0].fire("touchstart", { touches: [touch()] }); h.cards[0].fire("touchend", { changedTouches: [touch()] });
+  const click = h.cards[0].fire("click"); if (!click.stopped) preview.fire("click");
+  assert.deepEqual(h.saved, ["image-main"], "tap invokes the actual preview button handler");
+  assert.ok(remove.fire("click").stopped);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.moves)), [["delete", "image-main"]], "actual delete handler remains usable");
+}
+console.log("PASS touch hold and 350ms/8px thresholds, scroll, tap, delete, cancel, OCR lock and desktop DnD");
