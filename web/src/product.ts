@@ -176,6 +176,12 @@ function loadExperienceRules(): Promise<void> {
   return experienceRulesLoadPromise;
 }
 
+function setSelectedInstance(id: string): void {
+  selectedId = id;
+  currentEditDraft = null;
+  planEditDraft = null;
+}
+
 function selectedStar(): Star | null { const displayed = displayStars(); return displayed.find((star) => star.starInstanceId === selectedId) ?? displayed[0] ?? null; }
 
 function applyWorkspaceContext(context: ProductWorkspaceContext): void {
@@ -223,14 +229,21 @@ function saveStateLabel(): string {
   return "已保存";
 }
 
-async function runWorkspaceMutation<T>(mutation: (session: import("./business/session").WorkspaceSession) => T, after?: (result: T) => void, options: { intent?: ReviewScrollIntent; anchorOccurrenceId?: string } = {}): Promise<void> {
-  const intent = options.intent ?? "keep";
+async function runWorkspaceMutation<T>(mutation: (session: import("./business/session").WorkspaceSession) => T, after?: (result: T) => void, options: { intent?: ReviewScrollIntent; anchorOccurrenceId?: string; selectsNewInstance?: boolean } = {}): Promise<void> {
+  let intent = options.intent ?? "keep";
+  const previousId = selectedId;
+  const previousIndex = filteredStars().findIndex((star) => star.starInstanceId === previousId);
   const viewport = intent === "top" ? null : captureReviewViewport(options.anchorOccurrenceId);
   if (isOcrLocked()) { reviewError = "识别正在运行，暂时不能修改当前工作区。"; renderReview(intent, viewport); return; }
   reviewSaveState = "saving"; reviewError = ""; renderReview();
   try {
     const committed = await workspaceController.mutate(mutation) as { context: ProductWorkspaceContext; result: T };
     applyWorkspaceContext(committed.context); pruneStaleReviewUiOnlyHistory(); syncPendingOcrReviewFromWorkspace(); after?.(committed.result); reviewSaveState = "saved";
+    const finalIndex = filteredStars().findIndex((star) => star.starInstanceId === selectedId);
+    if (intent === "keep" && finalIndex >= 0 &&
+        (options.selectsNewInstance || (selectedId === previousId && finalIndex !== previousIndex))) {
+      intent = { starInstanceId: selectedId, targetVisualRow: 5 };
+    }
   } catch (error) {
     if (error instanceof WorkspaceRevisionConflictError) {
       applyWorkspaceContext(await workspaceController.reload()); syncPendingOcrReviewFromWorkspace(); reviewSaveState = "reloaded"; reviewError = "";
@@ -952,15 +965,18 @@ function scrollSelectedRowsToTop(): void {
 
 /** Re-find a persisted instance after sorting and place it at the requested data-row position in both panes. */
 function scrollStarRowsToVisualRow(intent: Extract<ReviewScrollIntent, { starInstanceId: string }>): void {
-  selectedId = intent.starInstanceId;
+  if (selectedId !== intent.starInstanceId || !filteredStars().some((star) => star.starInstanceId === intent.starInstanceId)) return;
   (["current", "plan"] as Pane[]).forEach((pane) => {
     const container = root.querySelector<HTMLElement>(`#${pane}-scroll`);
     const row = root.querySelector<HTMLTableRowElement>(`[data-star-id="${intent.starInstanceId}"][data-pane="${pane}"]`);
     if (!container || !row) return;
-    const rowHeight = row.getBoundingClientRect().height;
     const headerHeight = row.closest("table")?.querySelector("thead")?.getBoundingClientRect().height ?? 0;
-    if (rowHeight <= 0) return;
-    const requested = row.offsetTop - headerHeight - ((intent.targetVisualRow - 1) * rowHeight);
+    const rows = Array.from(container.querySelectorAll<HTMLTableRowElement>("tbody [data-star-id]"));
+    const index = rows.indexOf(row);
+    const contextRow = rows[Math.max(0, index - (intent.targetVisualRow - 1))];
+    if (!contextRow) return;
+    // Use actual preceding rows, including variable heights, rather than a pixel approximation.
+    const requested = contextRow.offsetTop - headerHeight;
     container.scrollTop = Math.min(Math.max(0, requested), Math.max(0, container.scrollHeight - container.clientHeight));
   });
 }
@@ -1226,7 +1242,7 @@ function commitCurrentEditor(): void {
   if (!hasCurrentInstanceUpdate(update)) { renderReview(); return; }
   activatePane("current");
   const starInstanceId = selected.starInstanceId;
-  void runWorkspaceMutation((session) => session.updateInstance(starInstanceId, update), () => { selectedId = starInstanceId; }, { intent: { starInstanceId, targetVisualRow: 5 } });
+  void runWorkspaceMutation((session) => session.updateInstance(starInstanceId, update), () => { setSelectedInstance(starInstanceId); });
 }
 
 function commitPlanEditor(): void {
@@ -1418,7 +1434,7 @@ function bindReviewControls(): void {
     if (!browserCatalog.isNameForKind(draft.name, draft.kind) || !Number.isInteger(draft.level) || draft.level < 1 || draft.level > 60) return;
     currentEditDraft = null;
     activatePane("current");
-    void runWorkspaceMutation((session) => session.addInstance({ ...draft, equippedState: "not_evaluated", provenance: { sourceOrder: session.state.inventory.length, audit: { productManual: true } }, manualStatus: "manual" }), (id) => { selectedId = id; });
+    void runWorkspaceMutation((session) => session.addInstance({ ...draft, equippedState: "not_evaluated", provenance: { sourceOrder: session.state.inventory.length, audit: { productManual: true } }, manualStatus: "manual" }), (id) => { setSelectedInstance(id); }, { selectsNewInstance: true });
   });
   root.querySelector("#delete-current-row")?.addEventListener("click", () => {
     activatePane("current");
