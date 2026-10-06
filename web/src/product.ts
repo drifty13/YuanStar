@@ -439,7 +439,7 @@ function reviewCandidateCardTemplate(candidate: ProductReviewCandidateV1): strin
   const actions = relationActions
     ? `<button class="button button-secondary positive-action" data-confirm-overlap-duplicate type="button">确认重复</button><button class="button button-tertiary" data-keep-overlap-separate type="button">保持独立</button>`
     : `<button class="button button-secondary" data-keep-review-candidate type="button">${productReviewKeepActionLabel(candidate)}</button><button class="button button-tertiary danger-action" data-ignore-review-candidate type="button">忽略</button><button class="button button-secondary" data-open-ordinary-edit type="button">人工修改</button>`;
-  return `<article class="pending-review-item ordinary-review-card kind-${candidate.kind}" data-review-occurrence="${html(candidate.occurrenceId)}" ${candidate.duplicateRowId ? `data-duplicate-row="${html(candidate.duplicateRowId)}"` : ""}><header class="candidate-card-header"><strong>${relationActions ? "重叠行关系待确认" : `第${candidate.row + 1}行第${candidate.column + 1}列`}</strong><span>${reviewCandidateStatus(candidate)}</span><span>${candidate.name ? html(candidate.name) : "未识别"}</span><span>${candidate.level == null ? "未识别" : `${candidate.level}级`}</span><span>${candidate.quality ?? "未识别"}</span></header>${reviewCropTemplate(candidate.sourceImageId, candidate.row)}${editor}<div class="candidate-action-row">${actionSet.has("view_source") ? `<button class="button button-tertiary" data-review-source="${html(candidate.sourceImageId)}" type="button">查看整页</button>` : ""}${actions}</div></article>`;
+  return `<article class="pending-review-item ordinary-review-card kind-${candidate.kind}" data-review-occurrence="${html(candidate.occurrenceId)}" ${candidate.duplicateRowId ? `data-duplicate-row="${html(candidate.duplicateRowId)}"` : ""}><header class="candidate-card-header"><strong>${relationActions ? "重叠行关系待确认" : `第${candidate.row + 1}行第${candidate.column + 1}列`}</strong><span>${reviewCandidateStatus(candidate)}</span><span>${candidate.name ? html(candidate.name) : "未识别"}</span><span>${candidate.level == null ? "未识别" : `${candidate.level}级`}</span><span>${candidate.quality ?? "未识别"}</span></header>${reviewCropTemplate(candidate.sourceImageId, candidate.row)}${editor}${editing ? "" : `<div class="candidate-action-row">${actionSet.has("view_source") ? `<button class="button button-tertiary" data-review-source="${html(candidate.sourceImageId)}" type="button">查看整页</button>` : ""}${actions}</div>`}</article>`;
 }
 function pendingOcrReviewTemplate(): string {
   const pending = pendingOcrReview;
@@ -1245,7 +1245,7 @@ function bindEditorCompletion(panel: HTMLElement, commit: () => void): void {
 }
 
 function bindReviewControls(): void {
-  root.querySelectorAll<HTMLButtonElement>("[data-review-source]").forEach((button) => button.addEventListener("click", () => { const id = button.dataset.reviewSource; if (id) void openReviewSourceImage(id); }));
+  root.querySelectorAll<HTMLButtonElement>("[data-review-source]").forEach((button) => button.addEventListener("click", () => { const occurrenceId = button.closest<HTMLElement>("[data-review-occurrence]")?.dataset.reviewOccurrence; if (occurrenceId && editingReviewOccurrences.has(occurrenceId)) return; const id = button.dataset.reviewSource; if (id) void openReviewSourceImage(id); }));
   root.querySelector<HTMLButtonElement>("[data-experience-source]")?.addEventListener("click", (event) => { const id = (event.currentTarget as HTMLButtonElement).dataset.experienceSource; if (id) void openReviewSourceImage(id); });
   root.querySelectorAll<HTMLButtonElement>("[data-toggle-review-image]").forEach((button) => button.addEventListener("click", () => {
     const sourceImageId = button.dataset.toggleReviewImage; if (!sourceImageId) return;
@@ -1281,7 +1281,7 @@ function bindReviewControls(): void {
   }));
   root.querySelectorAll<HTMLButtonElement>("[data-ignore-review-candidate]").forEach((button) => button.addEventListener("click", () => {
     const pending = pendingOcrReview; const item = button.closest<HTMLElement>("[data-review-occurrence]"); const occurrenceId = item?.dataset.reviewOccurrence;
-    if (!pending || !item || !occurrenceId) return;
+    if (!pending || !item || !occurrenceId || editingReviewOccurrences.has(occurrenceId)) return;
     runReviewWorkspaceMutation(occurrenceId, (session) => session.resolveOccurrenceReview(occurrenceId, "ignored"), (invalidatedDuplicate) => {
       invalidReviewOccurrences.delete(occurrenceId);
       editingReviewOccurrences.delete(occurrenceId);
@@ -1290,7 +1290,7 @@ function bindReviewControls(): void {
   }));
   const resolveOverlap = (button: HTMLButtonElement, resolution: "merge" | "keep_separate"): void => {
     const pending = pendingOcrReview; const item = button.closest<HTMLElement>("[data-review-occurrence]"); const occurrenceId = item?.dataset.reviewOccurrence;
-    if (!pending || !item || !occurrenceId) return;
+    if (!pending || !item || !occurrenceId || editingReviewOccurrences.has(occurrenceId)) return;
     const candidate = buildProductReviewCandidates(pending.draft, pending.resolution, pending.evidence, new Set()).find((entry) => entry.occurrenceId === occurrenceId);
     if (!candidate?.overlapPending || !candidate.duplicateRowId) return;
     runReviewWorkspaceMutation(occurrenceId, (session) => session.setRowOverlapResolution(candidate.duplicateRowId!, resolution), () => {
@@ -1302,7 +1302,7 @@ function bindReviewControls(): void {
   root.querySelectorAll<HTMLButtonElement>("[data-keep-overlap-separate]").forEach((button) => button.addEventListener("click", () => resolveOverlap(button, "keep_separate")));
   root.querySelectorAll<HTMLButtonElement>("[data-keep-review-candidate]").forEach((button) => button.addEventListener("click", () => {
     const pending = pendingOcrReview; const item = button.closest<HTMLElement>("[data-review-occurrence]"); const occurrenceId = item?.dataset.reviewOccurrence;
-    if (!pending || !item || !occurrenceId) return;
+    if (!pending || !item || !occurrenceId || editingReviewOccurrences.has(occurrenceId)) return;
     const candidate = buildProductReviewCandidates(pending.draft, pending.resolution, pending.evidence, new Set()).find((entry) => entry.occurrenceId === occurrenceId);
     if (!candidate || !isProductReviewCandidateComplete(candidate, browserCatalog)) {
       editingReviewOccurrences.add(occurrenceId); invalidReviewOccurrences.add(occurrenceId); showToast("请先补全名称、等级和品质。"); renderReview(); return;
