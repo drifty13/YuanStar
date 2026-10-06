@@ -102,6 +102,7 @@ let dataToolError = "";
 let restorePointList: Array<{ restorePointId: string; reason: string; createdAt: string; workspaceRevision: number; bagCurrentCount: number | null; bagCapacity: number | null; inventoryCount: number; plannedCount: number }> = [];
 let dataMenuOutsideListenerBound = false;
 let pasteListenerBound = false;
+let cancelImportTouchDrag: (() => void) | null = null;
 const importPoolScrollLeft: Record<Pool, number> = { 主星: 0, 辅星: 0, 经验星曜: 0 };
 const experienceDraft = { orange: "", purple: "", white: "" };
 let importImages: ImportImage[] = [];
@@ -600,7 +601,7 @@ function imageOptions(pool: OverlapPool, selectedId?: string): string {
 function importPoolTemplate(pool: Pool): string {
   const images = sortProductImportImagesForDisplay(importImages.filter((image) => image.pool === pool));
   const classificationPending = hasClassifyingImportImages();
-  return `<section class="import-pool import-pool-${pool}" data-import-pool="${pool}" aria-label="${pool}池"><header><h2>${pool}池 <span>（${images.length} 张）</span></h2><button class="button button-secondary positive-action" data-confirm-pool="${pool}" type="button" ${isOcrLocked() || classificationPending || !images.length ? "disabled" : ""}>确认本池</button></header><div class="pool-thumbnail-scroll" data-pool-scroll="${pool}">${images.length ? images.map((image) => `<article class="thumbnail-card${image.confirmed ? " is-confirmed" : " is-unconfirmed"}${image.classificationStatus === "classifying" ? " is-classifying" : ""}" draggable="${!isOcrLocked() && image.classificationStatus !== "classifying"}" data-import-image="${image.sourceImageId}" aria-label="${html(image.filename)}" data-display-locale-ignore-attributes><button class="thumbnail-preview" type="button" data-preview-image="${image.sourceImageId}" aria-label="查看 ${html(image.filename)}" data-display-locale-ignore-attributes><span class="thumbnail-image"><img src="${image.objectUrl}" alt="${html(image.filename)}" data-display-locale-ignore-attributes /></span><span class="thumbnail-caption"><em>${importImages.findIndex((candidate) => candidate.sourceImageId === image.sourceImageId) + 1}</em><strong data-display-locale-ignore>${html(image.filename)}</strong><small>${html(importImageStatusLabel(image))}</small></span></button><button class="thumbnail-delete danger-action" type="button" data-delete-image="${image.sourceImageId}" aria-label="从${pool}池移除 ${html(image.filename)}" data-display-locale-ignore-attributes title="移除图片" ${isOcrLocked() ? "disabled" : ""}>×</button></article>`).join("") : `<div class="empty-pool-card"><span>暂无图片</span><small>${pool === "经验星曜" ? "可在此查看经验星曜完整页" : "添加图片后自动推荐分类"}</small></div>`}</div></section>`;
+  return `<section class="import-pool import-pool-${pool}" data-import-pool="${pool}" aria-label="${pool}池"><header><h2>${pool}池 <span>（${images.length} 张）</span></h2><button class="button button-secondary positive-action" data-confirm-pool="${pool}" type="button" ${isOcrLocked() || classificationPending || !images.length ? "disabled" : ""}>确认本池</button></header><div class="pool-thumbnail-scroll" data-pool-scroll="${pool}">${images.length ? images.map((image) => `<article class="thumbnail-card${image.confirmed ? " is-confirmed" : " is-unconfirmed"}${image.classificationStatus === "classifying" ? " is-classifying" : ""}" draggable="${!isOcrLocked() && image.classificationStatus !== "classifying"}" data-import-image="${image.sourceImageId}" aria-label="${html(image.filename)}" data-display-locale-ignore-attributes><button class="thumbnail-preview" type="button" data-preview-image="${image.sourceImageId}" aria-label="查看 ${html(image.filename)}" data-display-locale-ignore-attributes><span class="thumbnail-image"><img draggable="false" src="${image.objectUrl}" alt="${html(image.filename)}" data-display-locale-ignore-attributes /></span><span class="thumbnail-caption"><em>${importImages.findIndex((candidate) => candidate.sourceImageId === image.sourceImageId) + 1}</em><strong data-display-locale-ignore>${html(image.filename)}</strong><small>${html(importImageStatusLabel(image))}</small></span></button><button class="thumbnail-delete danger-action" type="button" data-delete-image="${image.sourceImageId}" aria-label="从${pool}池移除 ${html(image.filename)}" data-display-locale-ignore-attributes title="移除图片" ${isOcrLocked() ? "disabled" : ""}>×</button></article>`).join("") : `<div class="empty-pool-card"><span>暂无图片</span><small>${pool === "经验星曜" ? "可在此查看经验星曜完整页" : "添加图片后自动推荐分类"}</small></div>`}</div></section>`;
 }
 
 function overlapTemplate(pool: OverlapPool): string {
@@ -727,6 +728,8 @@ function restoreImportPoolScroll(): void {
 }
 
 function renderPage(): void {
+  cancelImportTouchDrag?.();
+  cancelImportTouchDrag = null;
   hideStarDescription();
   if (activeTab === "import") captureImportPoolScroll();
   root.innerHTML = shellTemplate();
@@ -1850,6 +1853,22 @@ function bindImportControls(): void {
   const fileInput = root.querySelector<HTMLInputElement>("#image-file-input");
   const dropZone = root.querySelector<HTMLButtonElement>("#file-drop-zone");
   let draggedImageId: string | null = null;
+  let touchDrag: { id: string; identifier: number; x: number; y: number; card: HTMLElement; active: boolean } | null = null;
+  let touchDragTimer: ReturnType<typeof setTimeout> | null = null;
+  let suppressPreviewClick = false;
+  const clearDrag = (): void => {
+    if (touchDragTimer != null) clearTimeout(touchDragTimer);
+    touchDragTimer = null;
+    touchDrag?.card.classList.remove("is-touch-dragging");
+    touchDrag = null;
+    draggedImageId = null;
+    root.querySelectorAll(".is-drag-target").forEach((pool) => pool.classList.remove("is-drag-target"));
+  };
+  cancelImportTouchDrag = clearDrag;
+  const touchPool = (touch: Touch): Pool | null => {
+    const pool = document.elementFromPoint(touch.clientX, touch.clientY)?.closest<HTMLElement>("[data-import-pool]");
+    return importPoolFrom(pool?.dataset.importPool);
+  };
   root.querySelectorAll<HTMLButtonElement>("[data-open-restore]").forEach((button) => button.addEventListener("click", () => { void openRestoreDialog(); }));
   dropZone?.addEventListener("click", () => fileInput?.click());
   fileInput?.addEventListener("change", () => { if (fileInput.files) addImportFiles(fileInput.files); });
@@ -1857,30 +1876,71 @@ function bindImportControls(): void {
   dropZone?.addEventListener("dragleave", () => dropZone.classList.remove("is-dragging"));
   dropZone?.addEventListener("drop", (event) => { event.preventDefault(); dropZone.classList.remove("is-dragging"); addImportFiles(event.dataTransfer?.files ?? []); });
   root.querySelectorAll<HTMLElement>("[data-import-image]").forEach((card) => {
-    card.addEventListener("pointerdown", () => { const image = findImportImage(card.dataset.importImage ?? ""); if (!isOcrLocked() && image?.classificationStatus !== "classifying") draggedImageId = card.dataset.importImage ?? null; });
+    // Touch events stay on their original card; hit-test the destination after a hold.
+    // A swipe before activation remains browser scrolling, including over the image.
+    card.addEventListener("touchstart", (event) => {
+      clearDrag();
+      suppressPreviewClick = false;
+      const image = findImportImage(card.dataset.importImage ?? "");
+      if (event.touches.length !== 1 || (event.target as Element).closest("[data-delete-image]") || isOcrLocked() || !image || image.classificationStatus === "classifying") return;
+      const touch = event.touches[0]!;
+      touchDrag = { id: image.sourceImageId, identifier: touch.identifier, x: touch.clientX, y: touch.clientY, card, active: false };
+      touchDragTimer = setTimeout(() => {
+        touchDragTimer = null;
+        if (!touchDrag || isOcrLocked()) { clearDrag(); return; }
+        touchDrag.active = true;
+        suppressPreviewClick = true;
+        card.classList.add("is-touch-dragging");
+      }, 350);
+    }, { passive: true });
+    card.addEventListener("touchmove", (event) => {
+      const drag = touchDrag;
+      if (!drag) return;
+      const touch = Array.from(event.touches).find((item) => item.identifier === drag.identifier);
+      if (!touch || event.touches.length !== 1 || isOcrLocked()) { clearDrag(); return; }
+      if (!drag.active) {
+        if (Math.hypot(touch.clientX - drag.x, touch.clientY - drag.y) > 8) clearDrag();
+        return;
+      }
+      event.preventDefault();
+      const targetPool = touchPool(touch);
+      root.querySelectorAll<HTMLElement>("[data-import-pool]").forEach((pool) => pool.classList.toggle("is-drag-target", pool.dataset.importPool === targetPool));
+    }, { passive: false });
+    card.addEventListener("touchend", (event) => {
+      const drag = touchDrag;
+      const touch = drag && Array.from(event.changedTouches).find((item) => item.identifier === drag.identifier);
+      const targetPool = drag?.active && touch ? touchPool(touch) : null;
+      if (drag?.active) event.preventDefault();
+      clearDrag();
+      if (drag && targetPool) moveImportImage(drag.id, targetPool);
+    }, { passive: false });
+    card.addEventListener("touchcancel", clearDrag, { passive: true });
+    card.addEventListener("pointercancel", clearDrag);
+    card.addEventListener("click", (event) => {
+      if (!suppressPreviewClick) return;
+      suppressPreviewClick = false;
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
     card.addEventListener("dragstart", (event) => {
       const image = findImportImage(card.dataset.importImage ?? "");
-      if (isOcrLocked() || image?.classificationStatus === "classifying") { event.preventDefault(); return; }
+      if ((event.target as Element).closest("[data-delete-image]") || isOcrLocked() || !image || image.classificationStatus === "classifying") { event.preventDefault(); return; }
       draggedImageId = card.dataset.importImage ?? null;
       if (draggedImageId) event.dataTransfer?.setData("text/plain", draggedImageId);
       if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
     });
-    card.addEventListener("dragend", () => root.querySelectorAll(".import-pool").forEach((pool) => pool.classList.remove("is-drag-target")));
+    card.addEventListener("dragend", clearDrag);
   });
   root.querySelectorAll<HTMLElement>("[data-import-pool]").forEach((poolElement) => {
     const targetPool = importPoolFrom(poolElement.dataset.importPool);
     if (!targetPool) return;
     poolElement.addEventListener("dragover", (event) => { event.preventDefault(); poolElement.classList.add("is-drag-target"); });
     poolElement.addEventListener("dragleave", (event) => { if (!poolElement.contains(event.relatedTarget as Node | null)) poolElement.classList.remove("is-drag-target"); });
-    poolElement.addEventListener("pointerup", () => {
-      const image = draggedImageId ? findImportImage(draggedImageId) : null;
-      if (image && image.pool !== targetPool) moveImportImage(image.sourceImageId, targetPool);
-      draggedImageId = null;
-    });
     poolElement.addEventListener("drop", (event) => {
       event.preventDefault();
-      poolElement.classList.remove("is-drag-target");
-      moveImportImage(event.dataTransfer?.getData("text/plain") || draggedImageId || "", targetPool);
+      const id = event.dataTransfer?.getData("text/plain") || draggedImageId || "";
+      clearDrag();
+      moveImportImage(id, targetPool);
     });
   });
   root.querySelectorAll<HTMLButtonElement>("[data-delete-image]").forEach((button) => button.addEventListener("click", (event) => { event.stopPropagation(); removeImportImage(button.dataset.deleteImage ?? ""); }));
@@ -1946,5 +2006,5 @@ renderPage();
 startProductOcrLifecycle(ocrCoordinator);
 void loadExperienceRules();
 void loadProductWorkspace();
-window.addEventListener("pagehide", () => importDraftController.releaseAll());
+window.addEventListener("pagehide", () => { cancelImportTouchDrag?.(); importDraftController.releaseAll(); });
 window.addEventListener("pageshow", (event) => { if (event.persisted) window.location.reload(); });

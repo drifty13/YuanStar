@@ -146,3 +146,23 @@ input, select { min-height: 30px; padding: 5px 7px; border: 1px solid var(--bord
 @media (min-width: 1181px) {
   .inventory-facts .inventory-fact-aligned-control { margin-top: 2px; }
 }
+
+/* Round 3 targeted polish. */
+/* Keep the filename and image from expanding the modal's implicit grid track. */
+.overlap-link { min-width: 0; }
+.overlap-link-name { flex: 1 1 0; max-width: none; }
+.overlap-link-actions { flex-shrink: 0; white-space: nowrap; }
+.overlap-section .overlap-controls select { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.overlap-section .overlap-controls > .button { flex-shrink: 0; }
+.image-lightbox { z-index: var(--z-overlay-panel, 90); height: 100vh; height: 100dvh; max-height: 100%; padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+.image-lightbox article { width: min(560px, 100%); height: min(900px, 100%); max-height: 100%; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; }
+.image-lightbox header { min-width: 0; flex-wrap: wrap; }
+.image-lightbox header > div:first-child { flex: 1 1 180px; min-width: 0; }
+.image-lightbox header strong { display: block; overflow-wrap: anywhere; max-height: 3em; overflow-y: auto; }
+.lightbox-tools { flex: 0 0 auto; margin-left: auto; }
+.lightbox-tools .button, .image-lightbox .icon-button, .image-lightbox footer .button { min-width: 44px; min-height: 44px; }
+.lightbox-image { min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.lightbox-media { min-width: 0; min-height: 0; width: 100%; height: 100%; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.lightbox-media img { display: block; width: 100%; height: 100%; max-width: 100%; max-height: 100%; object-fit: contain; }
+.thumbnail-image img { -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
+.thumbnail-card.is-touch-dragging { outline: 2px solid var(--accent); opacity: .7; }
