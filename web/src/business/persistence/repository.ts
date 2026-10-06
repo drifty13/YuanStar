@@ -77,9 +77,53 @@ export async function putAccount(db: IDBDatabase, account: AccountRecord): Promi
 export async function getWorkspace(db: IDBDatabase, accountId: string): Promise<WorkspaceRecord | undefined> { return requestResult<WorkspaceRecord | undefined>(db.transaction("workspaces", "readonly").objectStore("workspaces").get(accountId)); }
 export async function getImage(db: IDBDatabase, accountId: string, imageId: string): Promise<ImageRecord | undefined> { return requestResult<ImageRecord | undefined>(db.transaction("images", "readonly").objectStore("images").get([accountId, imageId])); }
 export async function listImagesForAccount(db: IDBDatabase, accountId: string): Promise<ImageRecord[]> { return (await requestResult<ImageRecord[]>(db.transaction("images", "readonly").objectStore("images").getAll())).filter((item) => item.accountId === accountId); }
-export async function listRestorePoints(db: IDBDatabase, accountId: string): Promise<RestorePointRecord[]> { return (await requestResult<RestorePointRecord[]>(db.transaction("restorePoints", "readonly").objectStore("restorePoints").getAll())).filter((item) => item.accountId === accountId); }
+export async function listRestorePoints(db: IDBDatabase, accountId: string): Promise<RestorePointRecord[]> {
+  // Maintain older v2 databases as well as newly created checkpoints.
+  const transaction = db.transaction(["restorePoints", "restorePointImages"], "readwrite");
+  const done = transactionComplete(transaction);
+  const points = await pruneRestorePoints(transaction, accountId, done);
+  await done;
+  return points;
+}
 export async function getRestorePoint(db: IDBDatabase, accountId: string, restorePointId: string): Promise<RestorePointRecord | undefined> { return requestResult<RestorePointRecord | undefined>(db.transaction("restorePoints", "readonly").objectStore("restorePoints").get([accountId, restorePointId])); }
 export async function getRestorePointImage(db: IDBDatabase, accountId: string, restorePointId: string, imageId: string): Promise<RestorePointImageRecord | undefined> { return requestResult<RestorePointImageRecord | undefined>(db.transaction("restorePointImages", "readonly").objectStore("restorePointImages").get([accountId, restorePointId, imageId])); }
+
+/** Compound v2 keys put every string ID for one account before the next array key. */
+function restoreAccountRange(accountId: string): IDBKeyRange {
+  return IDBKeyRange.bound([accountId], [accountId, []]);
+}
+
+async function pruneRestorePoints(transaction: IDBTransaction, accountId: string, done: Promise<void>): Promise<RestorePointRecord[]> {
+  const points = transaction.objectStore("restorePoints");
+  const images = transaction.objectStore("restorePointImages");
+  const range = restoreAccountRange(accountId);
+  let accountPoints: RestorePointRecord[];
+  let accountImages: RestorePointImageRecord[];
+  try {
+    [accountPoints, accountImages] = await Promise.all([
+      requestResult<RestorePointRecord[]>(points.getAll(range)),
+      requestResult<RestorePointImageRecord[]>(images.getAll(range)),
+    ]);
+  } catch (error) {
+    try { transaction.abort(); } catch { /* request failure may have already aborted */ }
+    try { await done; } catch { /* consume the transaction rejection */ }
+    throw error;
+  }
+  const ordered = accountPoints.filter((point) => point.accountId === accountId)
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.restorePointId.localeCompare(left.restorePointId));
+  const retained = ordered.slice(0, 3);
+  const retainedIds = new Set(retained.map((point) => point.restorePointId));
+  for (const point of ordered.slice(3)) points.delete([accountId, point.restorePointId]);
+  // Each companion Blob record belongs to one restore identity, even when an
+  // imageId is shared with live images or another checkpoint. Delete by that
+  // full key, including legacy companions missing from snapshot.imageIds.
+  for (const image of accountImages) {
+    if (image.accountId === accountId && !retainedIds.has(image.restorePointId)) {
+      images.delete([accountId, image.restorePointId, image.imageId]);
+    }
+  }
+  return retained;
+}
 
 function assertAccountNameAvailable(accounts: AccountRecord[], candidate: AccountRecord): void {
   if (accounts.some((account) => account.accountId !== candidate.accountId && account.gameVersion === candidate.gameVersion && account.displayName === candidate.displayName)) {
@@ -202,6 +246,7 @@ export async function commitWorkspaceTransaction(db: IDBDatabase, input: CommitW
     const restore = input.optionalRestorePoint;
     transaction.objectStore("restorePoints").put({ accountId: input.accountId, restorePointId: restore.restorePointId, reason: restore.reason, createdAt: restore.createdAt, workspaceRevision: preChangeRestore.revision, snapshot: preChangeRestore.snapshot, imageIds: [...restore.imageIds] } satisfies RestorePointRecord);
     restore.images.forEach((image) => transaction.objectStore("restorePointImages").put({ ...image, accountId: input.accountId, restorePointId: restore.restorePointId }));
+    await pruneRestorePoints(transaction, input.accountId, done);
   }
   if (input.abortAfterWritesForTest) { transaction.abort(); await done; }
   await done;

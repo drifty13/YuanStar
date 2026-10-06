@@ -1,3 +1,4 @@
+import "./helpers/idb-key-range.js";
 import { createEmptyWorkspace } from "../src/business/model.js";
 import { commitWorkspaceTransaction, createAccountWorkspace, deleteAccountData, getAccount, getMeta, getWorkspace, listAccounts, listImagesForAccount, listRestorePoints, setMeta, updateAccountMetadata, type AccountRecord } from "../src/business/persistence/repository.js";
 

@@ -1,3 +1,4 @@
+import "./helpers/idb-key-range.js";
 import { createEmptyWorkspace } from "../src/business/model.js";
 import { commitWorkspaceTransaction, getAccount, getMeta, getWorkspace, openDatabase, putAccount, type AccountRecord } from "../src/business/persistence/repository.js";
 import type { ReconcileDraftV1 } from "../src/business/reconcile.js";

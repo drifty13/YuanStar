@@ -1,3 +1,4 @@
+import "./helpers/idb-key-range.js";
 import { getImportDraft, saveImportDraft, type ImportDraftImageRecord, type SaveImportDraftInput } from "../src/business/persistence/import-draft-repository.js";
 import { ProductImportDraftController, restoreProductImportDraft } from "../src/product-import-draft.js";
 import { applyProductImportClassification, removeProductImportImage, type ProductImportImage, type ProductOverlapPair } from "../src/product-ocr-import.js";

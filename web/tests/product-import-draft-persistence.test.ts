@@ -1,3 +1,4 @@
+import "./helpers/idb-key-range.js";
 import { deleteAccountData, openDatabase, PRODUCTION_DB_VERSION, PRODUCTION_STORES } from "../src/business/persistence/repository.js";
 import { clearImportDraft, getImportDraft, replaceImportDraft, saveImportDraft, saveImportDraftMetadata, type ImportDraftImageMetadata, type ReplaceImportDraftInput } from "../src/business/persistence/import-draft-repository.js";
 
