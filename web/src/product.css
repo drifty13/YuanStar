@@ -180,3 +180,23 @@ input, select { min-height: 30px; padding: 5px 7px; border: 1px solid var(--bord
   .plan-inventory-header h2 span { font-size: .65rem; }
   .pending-only-toggle { font-size: .65rem; }
 }
+
+/* Final standalone inventory and compact plan controls. */
+.inventory-grid th, .inventory-grid td { width: 16.6666667%; }
+.inventory-grid th:nth-child(1), .inventory-grid td:nth-child(1) { width: 12.5%; }
+.inventory-grid th:nth-child(4), .inventory-grid td:nth-child(4) { width: 20.8333333%; }
+.plan-actions { justify-content: flex-start; gap: 6px; }
+.plan-actions > .button { flex: 0 1 calc(6em + 16px); width: auto; min-width: max-content; max-width: calc(6em + 16px); padding-inline: 6px; white-space: nowrap; }
+.plan-actions > #reset-plans { margin-left: auto; }
+.experience-source-label-mobile { display: none; }
+@media (max-width: 767px) {
+  .inventory-grid th, .inventory-grid td { padding-inline: 2px; }
+}
+@media (max-width: 560px) {
+  .experience-source-label-desktop { display: none; }
+  .experience-source-label-mobile { display: inline; }
+}
+@media (max-width: 360px) {
+  .plan-actions { gap: 3px; }
+  .plan-actions > .button { padding-inline: 1px; }
+}
