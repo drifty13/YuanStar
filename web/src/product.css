@@ -75,7 +75,7 @@ input, select { min-height: 30px; padding: 5px 7px; border: 1px solid var(--bord
 .pending-review-item p { margin: 7px 0; color: var(--text-secondary); font-size: .7rem; }
 .pending-suggestion { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--text-secondary); font-size: .7rem; }
 .ocr-review { --review-gap: 10px; }
-.pending-edit-grid { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(0, .8fr) minmax(0, .8fr); gap: 6px; margin-top: 5px; min-width: 0; }
+.pending-edit-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1fr); gap: 6px; margin-top: 5px; min-width: 0; }
 .pending-edit-grid label { color: var(--text-secondary); font-size: .67rem; }
 .pending-edit-grid > *, .pending-edit-grid input, .pending-edit-grid select { min-width: 0; }.pending-edit-grid input, .pending-edit-grid select { width: 100%; margin-top: 3px; }
 .pending-review-actions, .pending-review-footer { display: flex; align-items: center; gap: 7px; margin-top: 9px; }
