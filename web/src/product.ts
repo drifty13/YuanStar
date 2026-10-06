@@ -474,12 +474,12 @@ function reviewCandidateCardTemplate(candidate: ProductReviewCandidateV1): strin
   const relationActions = candidate.overlapPending;
   const editing = editingReviewOccurrences.has(candidate.occurrenceId);
   const warning = invalidReviewOccurrences.has(candidate.occurrenceId);
-  const editor = editing ? `<div class="pending-inline-editor"><div class="pending-edit-grid"><label>标准名称<select data-review-edit-name>${ordinaryReviewNameOptions(candidate.name)}</select></label><label>等级<input data-review-edit-level type="number" min="1" max="60" value="${candidate.level ?? ""}" /></label><label>品质<select data-review-edit-quality><option value="">请选择</option>${(["橙", "紫", "蓝", "绿", "白"] as Quality[]).map((quality) => `<option ${quality === candidate.quality ? "selected" : ""}>${quality}</option>`).join("")}</select></label></div><div class="pending-editor-actions"><button class="button button-secondary positive-action" data-confirm-ordinary-edit type="button">确认修改</button><button class="button button-tertiary" data-cancel-ordinary-edit type="button">取消</button></div></div>` : "";
+  const editor = editing ? `<div class="pending-inline-editor"><div class="pending-edit-grid"><label>标准名称<select data-review-edit-name>${ordinaryReviewNameOptions(candidate.name)}</select></label><label>等级<input data-review-edit-level type="number" min="1" max="60" value="${candidate.level ?? ""}" /></label><label>品质<select data-review-edit-quality><option value="">请选择</option>${(["橙", "紫", "蓝", "绿", "白"] as Quality[]).map((quality) => `<option ${quality === candidate.quality ? "selected" : ""}>${quality}</option>`).join("")}</select></label></div><div class="pending-editor-actions"><button class="button button-tertiary" data-cancel-ordinary-edit type="button">取消</button><button class="button button-secondary positive-action" data-confirm-ordinary-edit type="button">确认</button></div></div>` : "";
   const actionSet = new Set(productReviewCandidateActions(candidate));
   const actions = relationActions
     ? `<button class="button button-secondary positive-action" data-confirm-overlap-duplicate type="button">确认重复</button><button class="button button-tertiary" data-keep-overlap-separate type="button">保持独立</button>`
-    : `<button class="button button-secondary" data-keep-review-candidate type="button">${productReviewKeepActionLabel(candidate)}</button><button class="button button-tertiary danger-action" data-ignore-review-candidate type="button">忽略</button><button class="button button-secondary" data-open-ordinary-edit type="button">人工修改</button>`;
-  return `<article class="pending-review-item ordinary-review-card kind-${candidate.kind}" data-review-occurrence="${html(candidate.occurrenceId)}" ${candidate.duplicateRowId ? `data-duplicate-row="${html(candidate.duplicateRowId)}"` : ""}><header class="candidate-card-header"><strong>${relationActions ? "重叠行关系待确认" : `第${candidate.row + 1}行第${candidate.column + 1}列`}</strong><span>${reviewCandidateStatus(candidate)}</span><span>${candidate.name ? html(candidate.name) : "未识别"}</span><span>${candidate.level == null ? "未识别" : `${candidate.level}级`}</span><span>${candidate.quality ?? "未识别"}</span></header>${reviewCropTemplate(candidate.sourceImageId, candidate.row)}${editor}${editing ? "" : `<div class="candidate-action-row">${actionSet.has("view_source") ? `<button class="button button-tertiary" data-review-source="${html(candidate.sourceImageId)}" type="button">查看整页</button>` : ""}${actions}</div>`}</article>`;
+    : `<button class="button button-secondary" title="${productReviewKeepActionLabel(candidate)}" data-keep-review-candidate type="button">保留</button><button class="button button-tertiary danger-action" data-ignore-review-candidate type="button">忽略</button><button class="button button-secondary" data-open-ordinary-edit type="button">修改</button>`;
+  return `<article class="pending-review-item ordinary-review-card kind-${candidate.kind}" data-review-occurrence="${html(candidate.occurrenceId)}" ${candidate.duplicateRowId ? `data-duplicate-row="${html(candidate.duplicateRowId)}"` : ""}><header class="candidate-card-header"><strong>${relationActions ? "重叠行关系待确认" : `第${candidate.row + 1}行第${candidate.column + 1}列`}</strong><span>${reviewCandidateStatus(candidate)}</span><span>${candidate.name ? html(candidate.name) : "未识别"}</span><span>${candidate.level == null ? "未识别" : `${candidate.level}级`}</span><span>${candidate.quality ?? "未识别"}</span></header>${reviewCropTemplate(candidate.sourceImageId, candidate.row)}${editor}${editing ? "" : `<div class="candidate-action-row">${actionSet.has("view_source") ? `<button class="button button-tertiary" data-review-source="${html(candidate.sourceImageId)}" type="button">整页</button>` : ""}${actions}</div>`}</article>`;
 }
 function pendingOcrReviewTemplate(): string {
   const pending = pendingOcrReview;
@@ -1915,7 +1915,14 @@ function bindImportControls(): void {
   let touchDrag: { id: string; identifier: number; x: number; y: number; card: HTMLElement; active: boolean } | null = null;
   let touchDragTimer: ReturnType<typeof setTimeout> | null = null;
   let suppressPreviewClick = false;
+  let previewClickCleanupTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearPreviewClickSuppression = (): void => {
+    if (previewClickCleanupTimer != null) clearTimeout(previewClickCleanupTimer);
+    previewClickCleanupTimer = null;
+    suppressPreviewClick = false;
+  };
   const clearDrag = (): void => {
+    clearPreviewClickSuppression();
     if (touchDragTimer != null) clearTimeout(touchDragTimer);
     touchDragTimer = null;
     touchDrag?.card.classList.remove("is-touch-dragging");
@@ -1939,7 +1946,6 @@ function bindImportControls(): void {
     // A swipe before activation remains browser scrolling, including over the image.
     card.addEventListener("touchstart", (event) => {
       clearDrag();
-      suppressPreviewClick = false;
       const image = findImportImage(card.dataset.importImage ?? "");
       if (event.touches.length !== 1 || (event.target as Element).closest("[data-delete-image]") || isOcrLocked() || !image || image.classificationStatus === "classifying") return;
       const touch = event.touches[0]!;
@@ -1971,13 +1977,19 @@ function bindImportControls(): void {
       const targetPool = drag?.active && touch && !isOcrLocked() ? touchPool(touch) : null;
       if (drag?.active) event.preventDefault();
       clearDrag();
-      if (drag && targetPool) moveImportImage(drag.id, targetPool);
+      if (drag && targetPool) {
+        moveImportImage(drag.id, targetPool);
+        // Cover this gesture's immediate synthetic click, even after a rerender.
+        // If preventDefault produced no click, expire before future user input.
+        suppressPreviewClick = true;
+        previewClickCleanupTimer = setTimeout(clearPreviewClickSuppression, 0);
+      }
     }, { passive: false });
     card.addEventListener("touchcancel", clearDrag, { passive: true });
     card.addEventListener("pointercancel", clearDrag);
     card.addEventListener("click", (event) => {
       if (!suppressPreviewClick) return;
-      suppressPreviewClick = false;
+      clearPreviewClickSuppression();
       event.preventDefault();
       event.stopPropagation();
     }, true);
