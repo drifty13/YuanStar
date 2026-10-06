@@ -14,7 +14,7 @@ assert.equal(compilation.status, 0, compilation.stderr || compilation.stdout);
 const source = readFileSync(new URL("../src/product.ts", import.meta.url), "utf8");
 const executable = readFileSync(join(output, "product.js"), "utf8");
 const names = [
-  "selectedStar", "captureReviewNavigation", "restoreReviewNavigation", "captureReviewUi",
+  "normalizePendingSelection", "setSelectedInstance", "effectiveReviewStars", "pendingOnlyCheckbox", "plannedLevelTemplate", "selectedStar", "captureReviewNavigation", "restoreReviewNavigation", "captureReviewUi",
   "recordReviewUiMutation", "nameSearchTerms", "hasActiveReviewFilter", "filteredStars",
   "panelRows", "summaryGroups", "summaryPanelRows", "reviewRows", "reviewCountLabel",
   "reviewTemplate", "bindReviewRows", "selectSummaryGroup", "cancelQueuedSummarySelection",
@@ -41,7 +41,7 @@ let nextTimer = 0;
 const row = { dataset: { pane: "current", summaryGroupKey: "主星|天府" }, listeners: {},
   addEventListener(name, handler) { this.listeners[name] = handler; }, querySelector() { return null; } };
 const context = createContext({
-  exports: {}, viewMode: "detail", kindFilter: "全部", qualityFilter: "全部", nameFilter: "", appliedNameFilter: "",
+  exports: {}, pendingOnly: false, viewMode: "detail", kindFilter: "全部", qualityFilter: "全部", nameFilter: "", appliedNameFilter: "",
   sortFilter: "level", preFilterSortFilter: null, reviewFilterWasActive: false, summarySelectedGroupKey: null,
   drillDownOrigin: null, selectedId: inventory[0].starInstanceId, selectedPane: "current", summaryClickTimer: null,
   pendingOcrReview: null, completedReviewOccurrences: new Set(), reviewUiUndo: [], reviewUiRedo: [],
@@ -90,8 +90,8 @@ assert.equal(context.sortFilter, "level", "summary lock preserves the prior deta
 assert.match(html, /3 组 · 4 颗/);
 assert.deepEqual(rowKeys(rows(html, "current")), ["主星|天府", "主星|武曲", "辅星|天府"]);
 assert.deepEqual(rowKeys(rows(html, "plan")), rowKeys(rows(html, "current")));
-assert.match(rows(html, "current"), /本组共 2 颗/);
-assert.match(rows(html, "plan"), /本组共 2 颗/);
+assert.match(rows(html, "current"), /共2颗/);
+assert.match(rows(html, "plan"), /共2颗/);
 
 execute("bindReviewRows()");
 row.listeners.click();

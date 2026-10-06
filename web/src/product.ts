@@ -83,6 +83,7 @@ type ReviewSortFilter = "catalog" | "name" | "level" | "target";
 let sortFilter: ReviewSortFilter = "catalog";
 type InventoryViewMode = "detail" | "summary";
 let viewMode: InventoryViewMode = "detail";
+let pendingOnly = false;
 let summarySelectedGroupKey: string | null = null;
 let preFilterSortFilter: ReviewSortFilter | null = null;
 let reviewFilterWasActive = false;
@@ -182,12 +183,23 @@ function setSelectedInstance(id: string): void {
   planEditDraft = null;
 }
 
-function selectedStar(): Star | null { const displayed = displayStars(); return displayed.find((star) => star.starInstanceId === selectedId) ?? displayed[0] ?? null; }
+function normalizePendingSelection(): void {
+  if (!pendingOnly) return;
+  const rows = effectiveReviewStars();
+  if (!rows.some((star) => star.starInstanceId === selectedId)) setSelectedInstance(rows[0]?.starInstanceId ?? "");
+}
+
+function selectedStar(): Star | null {
+  normalizePendingSelection();
+  const displayed = pendingOnly ? effectiveReviewStars() : displayStars();
+  return displayed.find((star) => star.starInstanceId === selectedId) ?? displayed[0] ?? null;
+}
 
 function applyWorkspaceContext(context: ProductWorkspaceContext): void {
   workspaceContext = context;
   stars = context.record.snapshot.inventory.map((item) => ({ ...item, targetLevel: context.record.snapshot.planTargets[item.starInstanceId] ?? item.level }));
-  if (!stars.some((star) => star.starInstanceId === selectedId)) selectedId = stars[0]?.starInstanceId ?? "";
+  if (pendingOnly) normalizePendingSelection();
+  else if (!stars.some((star) => star.starInstanceId === selectedId)) selectedId = stars[0]?.starInstanceId ?? "";
   experienceDraft.orange = context.record.snapshot.experience.orange == null ? "" : String(context.record.snapshot.experience.orange);
   experienceDraft.purple = context.record.snapshot.experience.purple == null ? "" : String(context.record.snapshot.experience.purple);
   experienceDraft.white = context.record.snapshot.experience.white == null ? "" : String(context.record.snapshot.experience.white);
@@ -232,14 +244,15 @@ function saveStateLabel(): string {
 async function runWorkspaceMutation<T>(mutation: (session: import("./business/session").WorkspaceSession) => T, after?: (result: T) => void, options: { intent?: ReviewScrollIntent; anchorOccurrenceId?: string; selectsNewInstance?: boolean } = {}): Promise<void> {
   let intent = options.intent ?? "keep";
   const previousId = selectedId;
-  const previousIndex = filteredStars().findIndex((star) => star.starInstanceId === previousId);
+  const previousIndex = effectiveReviewStars().findIndex((star) => star.starInstanceId === previousId);
   const viewport = intent === "top" ? null : captureReviewViewport(options.anchorOccurrenceId);
   if (isOcrLocked()) { reviewError = "识别正在运行，暂时不能修改当前工作区。"; renderReview(intent, viewport); return; }
   reviewSaveState = "saving"; reviewError = ""; renderReview();
   try {
     const committed = await workspaceController.mutate(mutation) as { context: ProductWorkspaceContext; result: T };
     applyWorkspaceContext(committed.context); pruneStaleReviewUiOnlyHistory(); syncPendingOcrReviewFromWorkspace(); after?.(committed.result); reviewSaveState = "saved";
-    const finalIndex = filteredStars().findIndex((star) => star.starInstanceId === selectedId);
+    normalizePendingSelection();
+    const finalIndex = effectiveReviewStars().findIndex((star) => star.starInstanceId === selectedId);
     if (intent === "keep" && finalIndex >= 0 &&
         (options.selectsNewInstance || (selectedId === previousId && finalIndex !== previousIndex))) {
       intent = { starInstanceId: selectedId, targetVisualRow: 5 };
@@ -346,6 +359,20 @@ function filteredStars(): Star[] {
   });
 }
 
+function effectiveReviewStars(): Star[] {
+  const base = filteredStars();
+  return pendingOnly ? base.filter((star) => star.targetLevel > star.level) : base;
+}
+
+function pendingOnlyCheckbox(): string {
+  return `<label class="pending-only-toggle">仅看待养成 <input id="pending-only" type="checkbox" ${pendingOnly ? "checked" : ""} /></label>`;
+}
+
+function plannedLevelTemplate(star: Star): string {
+  const target = `<span class="planned-level${star.targetLevel !== star.level ? " is-planned" : ""}">${star.targetLevel}</span>`;
+  return star.targetLevel > star.level ? `${star.level}<span class="level-arrow">→</span>${target}` : target;
+}
+
 function selectedExperiencePlan(selected: Star): InstanceExperiencePlan {
   const draftTarget = selected.starInstanceId === selectedId && planEditDraft != null && Number.isInteger(planEditDraft)
     ? Math.min(60, Math.max(selected.level, planEditDraft)) : selected.targetLevel;
@@ -355,18 +382,18 @@ function persistedExperiencePlan(star: Star): InstanceExperiencePlan {
   return { starInstanceId: star.starInstanceId, currentLevel: star.level, targetLevel: star.targetLevel };
 }
 function requirementText(requirement: PurpleWhiteRequirement): string { return `紫星曜 ${requirement.purple} 颗　白星曜 ${requirement.white} 颗`; }
-function experienceNeedsTemplate(selected: Star): string {
+function experienceNeedsTemplate(selected: Star | null): string {
   const failure = experienceRulesError ? `经验星曜规则加载失败，暂无法计算计划需求。${experienceRulesError ? ` ${experienceRulesError}` : ""}` : "正在加载经验星曜规则…";
-  if (!experienceRules) return `<article class="experience-needs"><h3>计划经验星曜需求</h3><dl><div><dt>当前选中行</dt><dd>${html(failure)}</dd><strong></strong></div><div><dt>${hasActiveReviewFilter() ? "完成当前筛选计划所需" : "完成全部计划所需"}</dt><dd>${html(failure)}</dd><strong></strong></div><div><dt>扣除当前背包后仍缺</dt><dd>${html(failure)}</dd><strong></strong></div></dl></article>`;
+  if (!experienceRules) return `<article class="experience-needs"><h3>计划经验星曜需求</h3><dl><div><dt>当前选中行</dt><dd>${html(failure)}</dd><strong></strong></div><div><dt>${pendingOnly || hasActiveReviewFilter() ? "完成当前筛选计划所需" : "完成全部计划所需"}</dt><dd>${html(failure)}</dd><strong></strong></div><div><dt>扣除当前背包后仍缺</dt><dd>${html(failure)}</dd><strong></strong></div></dl></article>`;
   const inventory = workspaceContext!.record.snapshot.experience;
-  const selectedSummary = summarizeExperiencePlans([selectedExperiencePlan(selected)], experienceRules, inventory);
-  const scope = (hasActiveReviewFilter() ? filteredStars() : displayStars()).map(selectedExperiencePlan);
+  const selectedSummary = summarizeExperiencePlans(selected ? [selectedExperiencePlan(selected)] : [], experienceRules, inventory);
+  const scope = effectiveReviewStars().map(selectedExperiencePlan);
   const summary = summarizeExperiencePlans(scope, experienceRules, inventory);
-  const selectedPlan = selectedExperiencePlan(selected);
+  const selectedPlan = selected ? selectedExperiencePlan(selected) : null;
   const unknownInventory = summary.remaining == null;
   const totalRuns = stage624RunsRequired(summary.required.experience, experienceRules);
   const gapRuns = unknownInventory ? null : stage624RunsRequired(summary.remaining!.experience, experienceRules);
-  return `<article class="experience-needs"><h3>计划经验星曜需求</h3><dl><div><dt>当前选中行</dt><dd>${html(`${selected.name} ${selected.level}级 → ${selectedPlan.targetLevel}级`)}</dd><strong>需要 ${requirementText(selectedSummary.required)}</strong></div><div><dt>${hasActiveReviewFilter() ? "完成当前筛选计划所需" : "完成全部计划所需"}</dt><dd>还需6-24 ${totalRuns} 次</dd><strong>${requirementText(summary.required)}</strong></div><div><dt>扣除当前背包后仍缺</dt><dd>${unknownInventory ? "当前经验星曜数量未完整确认，暂无法计算缺口" : `还需6-24 ${gapRuns} 次`}</dd><strong>${unknownInventory ? "" : requirementText(summary.remaining!)}</strong></div></dl></article>`;
+  return `<article class="experience-needs"><h3>计划经验星曜需求</h3><dl><div><dt>当前选中行</dt><dd>${selected && selectedPlan ? html(`${selected.name} ${selected.level}级 → ${selectedPlan.targetLevel}级`) : "—"}</dd><strong>需要 ${requirementText(selectedSummary.required)}</strong></div><div><dt>${pendingOnly || hasActiveReviewFilter() ? "完成当前筛选计划所需" : "完成全部计划所需"}</dt><dd>还需6-24 ${totalRuns} 次</dd><strong>${requirementText(summary.required)}</strong></div><div><dt>扣除当前背包后仍缺</dt><dd>${unknownInventory ? "当前经验星曜数量未完整确认，暂无法计算缺口" : `还需6-24 ${gapRuns} 次`}</dd><strong>${unknownInventory ? "" : requirementText(summary.remaining!)}</strong></div></dl></article>`;
 }
 function refreshExperienceNeeds(): void {
   const existing = root.querySelector<HTMLElement>(".experience-needs");
@@ -486,29 +513,32 @@ function reviewSourcePreviewTemplate(): string {
 }
 
 function panelRows(pane: Pane): string {
-  const rows = filteredStars();
+  const rows = effectiveReviewStars();
   const totals = new Map<string, number>();
   rows.forEach((star) => { const key = inventoryGroupKey(star); totals.set(key, (totals.get(key) ?? 0) + 1); });
+  const baseTotals = new Map<string, number>();
+  if (pendingOnly) filteredStars().forEach((star) => { const key = inventoryGroupKey(star); baseTotals.set(key, (baseTotals.get(key) ?? 0) + 1); });
   const displayedGroups = new Set<string>();
   return rows.map((star, index) => {
     const selected = star.starInstanceId === selectedId && pane === selectedPane;
     const counterpart = star.starInstanceId === selectedId && pane !== selectedPane;
     const kindDivider = index > 0 && rows[index - 1]?.kind !== star.kind;
     const key = inventoryGroupKey(star);
-    const groupCount = displayedGroups.has(key) ? "—" : `本组共 ${totals.get(key)} 颗`;
+    const groupCount = displayedGroups.has(key) ? "—" : pendingOnly
+      ? `待养 ${totals.get(key)} / 共 ${baseTotals.get(key)}` : `共${totals.get(key)}颗`;
     displayedGroups.add(key);
     const description = starDescription(star.name);
     return `<tr class="inventory-row${selected ? " is-selected" : ""}${counterpart ? " is-counterpart" : ""}${kindDivider ? " is-kind-divider" : ""}" data-star-id="${star.starInstanceId}" data-pane="${pane}" tabindex="0" aria-selected="${selected}">
       <td class="check-cell"><input type="checkbox" aria-label="选择 ${star.name}" ${selected ? "checked" : ""} /></td>
       <td>${star.kind}</td><td class="name-cell">${description ? `<button class="star-name-tooltip-trigger" type="button" data-star-description-name="${html(star.name)}">${star.name}</button>` : star.name}</td>
-      <td>${pane === "current" ? star.level : `<span class="planned-level${star.targetLevel !== star.level ? " is-planned" : ""}">${star.targetLevel}</span>`}</td>
-      <td>${qualityMark(star.quality)}</td><td class="quantity-cell">${groupCount}</td>
+      <td>${pane === "current" ? star.level : plannedLevelTemplate(star)}</td>
+      <td>${qualityMark(star.quality)}</td><td class="quantity-cell${pendingOnly ? " pending-summary-count" : ""}">${groupCount}</td>
     </tr>`;
   }).join("");
 }
 
 function summaryGroups(): InventorySummaryGroup[] {
-  return buildInventorySummaryGroups(filteredStars(), (name) => browserCatalog.orderIndex(name));
+  return buildInventorySummaryGroups(effectiveReviewStars(), (name) => browserCatalog.orderIndex(name), pendingOnly ? filteredStars() : undefined);
 }
 
 function summaryPanelRows(pane: Pane): string {
@@ -521,14 +551,17 @@ function summaryPanelRows(pane: Pane): string {
     return `<tr class="inventory-row summary-row${selected ? " is-selected" : ""}${kindDivider ? " is-kind-divider" : ""}" data-summary-group-key="${html(group.key)}" data-pane="${pane}" tabindex="0" aria-selected="${selected}">
       <td class="check-cell"><input type="checkbox" aria-label="选择 ${html(group.name)} 汇总" ${selected ? "checked" : ""} /></td>
       <td>${group.kind}</td><td class="name-cell">${description ? `<button class="star-name-tooltip-trigger" type="button" data-star-description-name="${html(group.name)}">${html(group.name)}</button>` : html(group.name)}</td>
-      <td>—</td><td>${quality}</td><td class="quantity-cell">本组共 ${group.count} 颗</td>
+      <td>—</td><td>${quality}</td><td class="quantity-cell${pendingOnly ? " pending-summary-count" : ""}">${pendingOnly ? `待养 ${group.count} / 共 ${group.totalCount}` : `共${group.count}颗`}</td>
     </tr>`;
   }).join("");
 }
 
-function reviewRows(pane: Pane): string { return viewMode === "summary" ? summaryPanelRows(pane) : panelRows(pane); }
+function reviewRows(pane: Pane): string {
+  const rows = viewMode === "summary" ? summaryPanelRows(pane) : panelRows(pane);
+  return rows || (pendingOnly ? '<tr class="review-filter-empty"><td colspan="6">当前显示范围暂无待养成星石。</td></tr>' : "");
+}
 function reviewCountLabel(pane: Pane): string {
-  const count = filteredStars().length;
+  const count = effectiveReviewStars().length;
   if (viewMode === "detail") return pane === "current" ? `（${count} 颗）` : `（对应 ${count} 颗）`;
   const groups = summaryGroups().length;
   return pane === "current" ? `（${groups} 组 · ${count} 颗）` : `（对应 ${groups} 组 · ${count} 颗）`;
@@ -537,9 +570,9 @@ function reviewCountLabel(pane: Pane): string {
 function summaryExperienceScope(): SummaryExperienceScope {
   return resolveSummaryExperienceScope({
     allStars: displayStars(),
-    filteredStars: filteredStars(),
+    filteredStars: effectiveReviewStars(),
     selectedGroupKey: summarySelectedGroupKey,
-    hasActiveFilter: hasActiveReviewFilter(),
+    hasActiveFilter: pendingOnly || hasActiveReviewFilter(),
   });
 }
 function summaryExperienceTitle(scope: SummaryExperienceScope): string {
@@ -563,11 +596,12 @@ function summaryExperienceNeedsTemplate(): string {
 function reviewTemplate(): string {
   const selected = selectedStar();
   if (!workspaceContext) return `<section class="review-page" aria-label="人工核对"><p class="review-overview">${reviewError || "正在加载当前工作区…"}</p></section>`;
-  if (!selected) return `<section class="review-page" aria-label="人工核对"><p class="review-overview"><span class="review-overview-count">当前汇总 0 颗。</span>${reviewError ? `<span class="inconsistent-warning">${html(reviewError)}</span>` : ""}</p><section class="inventory-grid" aria-label="当前背包与计划背包"><article class="inventory-panel"><header><h2>当前背包 <span>（0 颗）</span></h2><small>暂无星石</small></header><div class="table-scroll"><table><thead><tr><th></th><th>大类</th><th>标准名称</th><th>等级</th><th>品质</th><th>数量</th></tr></thead><tbody></tbody></table></div></article><article class="inventory-panel"><header><h2>计划背包 <span>（对应 0 颗）</span></h2><small>对应当前背包</small></header><div class="table-scroll"><table><thead><tr><th></th><th>大类</th><th>标准名称</th><th>计划等级</th><th>品质</th><th>数量</th></tr></thead><tbody></tbody></table></div></article></section><section class="ocr-review" aria-labelledby="ocr-review-title"><button class="ocr-summary" id="toggle-ocr-review" type="button" aria-expanded="true"><span><strong id="ocr-review-title">OCR图片人工复核</strong> <em>当前工作区来源与复核</em></span><span class="ocr-toggle-label">收起</span></button><div class="ocr-review-list">${pendingOcrReviewTemplate()}</div></section></section>`;
-  if (selected.starInstanceId !== selectedId) selectedId = selected.starInstanceId;
-  const planned = selected.targetLevel !== selected.level;
+  if (displayStars().length === 0) return `<section class="review-page" aria-label="人工核对"><p class="review-overview"><span class="review-overview-count">当前汇总 0 颗。</span>${reviewError ? `<span class="inconsistent-warning">${html(reviewError)}</span>` : ""}</p><section class="inventory-grid" aria-label="当前背包与计划背包"><article class="inventory-panel"><header><h2>当前背包 <span>（0 颗）</span></h2><small>暂无星石</small></header><div class="table-scroll"><table><thead><tr><th></th><th>大类</th><th>标准名称</th><th>等级</th><th>品质</th><th>数量</th></tr></thead><tbody></tbody></table></div></article><article class="inventory-panel"><header class="plan-inventory-header"><div class="inventory-heading"><h2>计划背包 <span>（对应 0 颗）</span></h2><small>对应当前背包</small></div>${pendingOnlyCheckbox()}</header><div class="table-scroll"><table><thead><tr><th></th><th>大类</th><th>标准名称</th><th>养成目标</th><th>品质</th><th>数量</th></tr></thead><tbody></tbody></table></div></article></section><section class="ocr-review" aria-labelledby="ocr-review-title"><button class="ocr-summary" id="toggle-ocr-review" type="button" aria-expanded="true"><span><strong id="ocr-review-title">OCR图片人工复核</strong> <em>当前工作区来源与复核</em></span><span class="ocr-toggle-label">收起</span></button><div class="ocr-review-list">${pendingOcrReviewTemplate()}</div></section></section>`;
+  if (selected && selected.starInstanceId !== selectedId) selectedId = selected.starInstanceId;
+  if (pendingOnly) normalizeSummarySelection();
+  const planned = selected != null && selected.targetLevel !== selected.level;
   const currentDraft = currentEditDraft ?? selected;
-  const effectivePlanLevel = planEditDraft ?? selected.targetLevel;
+  const effectivePlanLevel = planEditDraft ?? selected?.targetLevel;
   const total = displayStars().length;
   const bagQuantity = workspaceContext.record.snapshot.bag.currentCount;
   const bagCapacity = workspaceContext.record.snapshot.bag.capacity;
@@ -592,9 +626,9 @@ function reviewTemplate(): string {
     </section>
     <section class="inventory-grid" aria-label="当前背包与计划背包">
       <article class="inventory-panel"><header><h2>当前背包 <span id="current-count">${reviewCountLabel("current")}</span></h2><small>${viewMode === "summary" ? "单击选组，双击任意位置查看逐颗明细" : "点击任意行进行核对"}</small></header><div class="table-scroll" id="current-scroll"><table><thead><tr><th></th><th>大类</th><th>标准名称</th><th>等级</th><th>品质</th><th>数量</th></tr></thead><tbody id="current-rows">${reviewRows("current")}</tbody></table></div></article>
-      <article class="inventory-panel"><header><h2>计划背包 <span id="plan-count">${reviewCountLabel("plan")}</span></h2><small>${viewMode === "summary" ? "与当前背包同步汇总" : "对应行自动同步"}</small></header><div class="table-scroll" id="plan-scroll"><table><thead><tr><th></th><th>大类</th><th>标准名称</th><th>计划等级</th><th>品质</th><th>数量</th></tr></thead><tbody id="plan-rows">${reviewRows("plan")}</tbody></table></div></article>
+      <article class="inventory-panel"><header class="plan-inventory-header"><div class="inventory-heading"><h2>计划背包 <span id="plan-count">${reviewCountLabel("plan")}</span></h2><small>${viewMode === "summary" ? "与当前背包同步汇总" : "对应行自动同步"}</small></div>${pendingOnlyCheckbox()}</header><div class="table-scroll" id="plan-scroll"><table><thead><tr><th></th><th>大类</th><th>标准名称</th><th>养成目标</th><th>品质</th><th>数量</th></tr></thead><tbody id="plan-rows">${reviewRows("plan")}</tbody></table></div></article>
     </section>
-    ${viewMode === "summary" ? "" : `<section class="edit-section" aria-label="当前背包与计划背包编辑区">
+    ${viewMode === "summary" || !selected || !currentDraft ? "" : `<section class="edit-section" aria-label="当前背包与计划背包编辑区">
       <article class="edit-panel current-editor" data-edit-panel="current"><header><p class="section-kicker">当前背包编辑</p><h2>${selected.name} <span>${selected.kind} · ${qualityMark(selected.quality)}</span></h2></header><div class="field-grid"><label>大类<select data-current-field="kind">${["主星", "辅星"].map((kind) => `<option ${kind === currentDraft.kind ? "selected" : ""}>${kind}</option>`).join("")}</select></label><label>标准名称<select data-current-field="name">${nameOptions(currentDraft.kind, currentDraft.name)}</select></label><label>当前等级<input data-current-field="level" type="number" min="1" max="60" value="${currentDraft.level}" /></label><label>品质<select data-current-field="quality">${(["橙", "紫", "蓝", "绿", "白"] as Quality[]).map((quality) => `<option ${quality === currentDraft.quality ? "selected" : ""}>${quality}</option>`).join("")}</select></label></div><div class="editor-actions"><button class="button button-secondary positive-action" id="add-current-row" type="button">新增当前行</button><button class="button button-tertiary danger-action" id="delete-current-row" type="button">删除当前行</button></div></article>
       <article class="edit-panel plan-editor" data-edit-panel="plan"><header><p class="section-kicker">计划背包编辑</p><h2>${selected.name} <span>${planned ? `${selected.level}级 → ${selected.targetLevel}级` : "保持当前等级"}</span></h2></header><div class="field-grid plan-field-grid"><label>当前等级<input value="${selected.level}" readonly /></label><label>计划等级<input id="target-level" type="number" min="${selected.level}" max="60" value="${effectivePlanLevel}" /></label><label>计划状态<input value="${effectivePlanLevel === selected.level ? "保持当前" : "已设置计划"}" readonly /></label></div><div class="plan-actions"><div><button class="button button-secondary" id="restore-current" type="button" ${selected.targetLevel === selected.level ? "disabled" : ""}>恢复为当前等级</button><button class="button button-secondary" id="quick-sixty" type="button" ${selected.targetLevel === 60 ? "disabled" : ""}>快捷计划60级</button></div><button class="button button-tertiary danger-action" id="reset-plans" type="button">重置全部计划</button></div></article>
     </section>`}
@@ -965,7 +999,7 @@ function scrollSelectedRowsToTop(): void {
 
 /** Re-find a persisted instance after sorting and place it at the requested data-row position in both panes. */
 function scrollStarRowsToVisualRow(intent: Extract<ReviewScrollIntent, { starInstanceId: string }>): void {
-  if (selectedId !== intent.starInstanceId || !filteredStars().some((star) => star.starInstanceId === intent.starInstanceId)) return;
+  if (selectedId !== intent.starInstanceId || !effectiveReviewStars().some((star) => star.starInstanceId === intent.starInstanceId)) return;
   (["current", "plan"] as Pane[]).forEach((pane) => {
     const container = root.querySelector<HTMLElement>(`#${pane}-scroll`);
     const row = root.querySelector<HTMLTableRowElement>(`[data-star-id="${intent.starInstanceId}"][data-pane="${pane}"]`);
@@ -982,6 +1016,11 @@ function scrollStarRowsToVisualRow(intent: Extract<ReviewScrollIntent, { starIns
 }
 
 function refreshReviewTables(): void {
+  if (pendingOnly) {
+    const previousSelection = selectedId;
+    normalizePendingSelection();
+    if (previousSelection !== selectedId) { renderReview(); return; }
+  }
   hideStarDescription();
   const currentRows = root.querySelector<HTMLElement>("#current-rows");
   const planRows = root.querySelector<HTMLElement>("#plan-rows");
@@ -1261,6 +1300,10 @@ function bindEditorCompletion(panel: HTMLElement, commit: () => void): void {
 }
 
 function bindReviewControls(): void {
+  root.querySelector<HTMLInputElement>("#pending-only")?.addEventListener("change", (event) => {
+    pendingOnly = (event.target as HTMLInputElement).checked;
+    renderReview();
+  });
   root.querySelectorAll<HTMLButtonElement>("[data-review-source]").forEach((button) => button.addEventListener("click", () => { const occurrenceId = button.closest<HTMLElement>("[data-review-occurrence]")?.dataset.reviewOccurrence; if (occurrenceId && editingReviewOccurrences.has(occurrenceId)) return; const id = button.dataset.reviewSource; if (id) void openReviewSourceImage(id); }));
   root.querySelector<HTMLButtonElement>("[data-experience-source]")?.addEventListener("click", (event) => { const id = (event.currentTarget as HTMLButtonElement).dataset.experienceSource; if (id) void openReviewSourceImage(id); });
   root.querySelectorAll<HTMLButtonElement>("[data-toggle-review-image]").forEach((button) => button.addEventListener("click", () => {

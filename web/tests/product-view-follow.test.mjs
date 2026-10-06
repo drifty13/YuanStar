@@ -48,7 +48,7 @@ function harness() {
     }) }) };`);
   function geometry(maxScroll = 600) {
     for (const pane of ["current", "plan"]) {
-      const ids = JSON.parse(run("JSON.stringify(filteredStars().map(star => star.starInstanceId))"));
+      const ids = JSON.parse(run("JSON.stringify(effectiveReviewStars().map(star => star.starInstanceId))"));
       const rows = ids.map((id, index) => ({ offsetTop: 30 + index * 32, closest: () => ({ querySelector: () => ({ getBoundingClientRect: () => ({ height: 30 }) }) }) }));
       const container = { scrollTop: 100, scrollHeight: maxScroll + 200, clientHeight: 200, querySelectorAll: () => rows };
       panes[pane] = container; nodes.set(`#${pane}-scroll`, container);
@@ -64,7 +64,7 @@ test("new instance remains selected and follows its final sorted row in both pan
   const h = harness();
   await h.run("runWorkspaceMutation(session => session.addInstance({kind:'主星', name:'武曲', level:48, quality:'紫'}), id => setSelectedInstance(id), {selectsNewInstance:true})");
   assert.equal(h.run("selectedId"), "new");
-  const index = h.run("filteredStars().findIndex(star => star.starInstanceId === 'new')");
+  const index = h.run("effectiveReviewStars().findIndex(star => star.starInstanceId === 'new')");
   assert.equal(h.panes.current.scrollTop, (index - 4) * 32);
   assert.equal(h.panes.plan.scrollTop, h.panes.current.scrollTop);
   assert.equal(h.intents.at(-1).starInstanceId, "new");
@@ -76,7 +76,7 @@ for (const [field, value, sort] of [["name", "太阳", "name"], ["level", 59, "l
     await h.run("Promise.resolve()");
     assert.equal(h.run("selectedId"), "s8");
     assert.equal(h.intents.at(-1).starInstanceId, "s8");
-    assert.equal(h.panes.current.scrollTop, Math.max(0, (h.run("filteredStars().findIndex(star => star.starInstanceId === 's8')") - 4) * 32));
+    assert.equal(h.panes.current.scrollTop, Math.max(0, (h.run("effectiveReviewStars().findIndex(star => star.starInstanceId === 's8')") - 4) * 32));
   });
 }
 test("edit with unchanged final index preserves scroll", async () => {
@@ -106,4 +106,13 @@ test("fifth-row context uses the actual preceding row when heights vary", () => 
   }
   h.run("scrollStarRowsToVisualRow({starInstanceId:'s8', targetVisualRow:5})");
   assert.equal(h.panes.current.scrollTop, 180); assert.equal(h.panes.plan.scrollTop, 180);
+});
+
+test("filtered-out identity and stale scheduled intent never reselect another row", async () => {
+  const h = harness(); h.run("pendingOnly = true; selectedId = 's8'");
+  await h.run("runWorkspaceMutation(session => session.setPlanTarget('s8', stars[8].level))");
+  assert.equal(h.intents.at(-1), "keep");
+  const selection = h.run("selectedId");
+  h.run("scrollStarRowsToVisualRow({starInstanceId:'s8', targetVisualRow:5})");
+  assert.equal(h.run("selectedId"), selection);
 });

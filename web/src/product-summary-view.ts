@@ -9,6 +9,7 @@ export type InventorySummaryGroup = {
   kind: SummaryStar["kind"];
   name: string;
   count: number;
+  totalCount?: number;
 };
 
 export type SummaryExperienceStar = SummaryStar & {
@@ -25,13 +26,21 @@ export function summaryGroupKey(star: Pick<SummaryStar, "kind" | "name">): strin
 }
 
 /** Input must already have the review filters applied; quality deliberately is not part of the key. */
-export function buildInventorySummaryGroups(stars: readonly SummaryStar[], catalogOrder: (name: string) => number): InventorySummaryGroup[] {
+export function buildInventorySummaryGroups(stars: readonly SummaryStar[], catalogOrder: (name: string) => number, baseStars?: readonly SummaryStar[]): InventorySummaryGroup[] {
   const groups = new Map<string, InventorySummaryGroup>();
   for (const star of stars) {
     const key = summaryGroupKey(star);
     const existing = groups.get(key);
     if (existing) existing.count += 1;
     else groups.set(key, { key, kind: star.kind, name: star.name, count: 1 });
+  }
+  if (baseStars) {
+    const totals = new Map<string, number>();
+    for (const star of baseStars) {
+      const key = summaryGroupKey(star);
+      totals.set(key, (totals.get(key) ?? 0) + 1);
+    }
+    for (const group of groups.values()) group.totalCount = totals.get(group.key) ?? 0;
   }
   return [...groups.values()].sort((left, right) => (
     (left.kind === right.kind ? 0 : left.kind === "主星" ? -1 : 1)
