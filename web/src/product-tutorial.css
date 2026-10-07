@@ -1,0 +1,47 @@
+.product-title-row { padding-inline: 96px; }
+.product-tutorial-toggle { position: absolute; top: 8px; left: 8px; height: 30px; padding: 0 8px; border: 1px solid #d8c6bc; border-radius: var(--radius-small); color: #6e5149; background: #fcf5f1; font: inherit; font-size: .78rem; font-weight: 700; white-space: nowrap; }
+.product-tutorial-toggle:hover, .product-tutorial-toggle:focus-visible { border-color: #cda79e; background: #f9ece6; }
+.product-tutorial-related { outline: 2px solid #9c6858; outline-offset: 4px; }
+.product-tutorial { position: fixed; inset: 0; z-index: 80; pointer-events: none; }
+.product-tutorial-spotlight, .product-tutorial-spotlight svg { position: absolute; inset: 0; }
+.product-tutorial-ring { position: fixed; border: 2px solid #9c6858; border-radius: 12px; box-sizing: border-box; }
+.product-tutorial-card { --tutorial-safe-top: env(safe-area-inset-top, 0px); --tutorial-safe-bottom: env(safe-area-inset-bottom, 0px); position: fixed; display: flex; flex-direction: column; width: min(340px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); padding: 12px; border: 1px solid #d8c6bc; border-radius: 18px; background: #fffaf3; color: #604d43; box-shadow: 0 16px 48px rgb(67 44 30 / 22%); pointer-events: auto; font: inherit; box-sizing: border-box; }
+.product-tutorial-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex: none; }
+.product-tutorial-count { display: block; color: #967b69; font-size: .72rem; font-weight: 600; }
+.product-tutorial-card h2 { margin: 3px 0 0; font-family: inherit; font-size: 1rem; line-height: 1.5; }
+.product-tutorial-close { flex: none; width: 30px; height: 30px; padding: 0; border: 1px solid #d8c6bc; border-radius: 50%; background: #fcf5f1; color: inherit; font-size: 1.3rem; }
+.product-tutorial-details { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.product-tutorial-body { margin: 10px 0; white-space: pre-line; font-size: .84rem; line-height: 1.65; }
+.product-tutorial-example { margin: 0 0 5px; padding: 6px 10px; border: 1px solid #d8c6bc; border-radius: 8px; background: #f7eee5; color: inherit; font: inherit; font-size: .78rem; }
+.product-tutorial-hint { margin: 4px 0 8px; color: #967b69; font-size: .7rem; }
+.product-tutorial-card footer { display: flex; justify-content: space-between; gap: 10px; padding-top: 10px; flex: none; }
+.product-tutorial-card footer button, .product-tutorial-example-panel footer button { min-height: 34px; padding: 6px 14px; border: 1px solid #d8c6bc; border-radius: 9px; color: inherit; background: #fcf5f1; font: inherit; font-size: .8rem; }
+.product-tutorial-card footer .product-tutorial-next { border-color: #9c6858; background: #9c6858; color: #fffaf3; }
+.product-tutorial button:disabled { opacity: .45; cursor: default; }
+.product-tutorial button:focus-visible { outline: 2px solid #9c6858; outline-offset: 2px; }
+.product-tutorial-handle-row { display: none; }
+.product-tutorial.is-mobile .product-tutorial-card { padding: 8px 12px 10px; }
+.product-tutorial.is-mobile .product-tutorial-handle-row { display: flex; justify-content: center; flex: none; height: 24px; }
+.product-tutorial-handle { width: 72px; height: 24px; padding: 8px 18px; border: 0; background: transparent; touch-action: none; cursor: grab; }
+.product-tutorial-handle span { display: block; width: 36px; height: 4px; border-radius: 8px; background: #c4aa97; }
+.product-tutorial.is-mobile .product-tutorial-close { position: absolute; top: 8px; right: 10px; width: 28px; height: 28px; }
+.product-tutorial.is-mobile .product-tutorial-card header { padding-right: 24px; }
+.product-tutorial-viewer { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); background: rgb(73 59 44 / 55%); pointer-events: auto; box-sizing: border-box; }
+.product-tutorial-example-panel { display: flex; flex-direction: column; min-width: 0; width: min(1080px, 100%); max-height: 100%; padding: 14px; border: 1px solid #d8c6bc; border-radius: 18px; background: #fffaf3; color: #604d43; box-shadow: 0 16px 48px rgb(67 44 30 / 22%); box-sizing: border-box; }
+.product-tutorial-example-panel.is-info { width: min(560px, 100%); }
+.product-tutorial-example-panel header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; }
+.product-tutorial-example-panel h2 { margin: 0; font-size: 1.1rem; }
+.product-tutorial-example-panel header button { width: 44px; height: 44px; padding: 0; flex: none; border: 1px solid #d8c6bc; border-radius: 50%; background: #fcf5f1; color: inherit; font-size: 1.5rem; }
+.product-tutorial-example-image { display: flex; justify-content: center; min-height: 0; flex: 1 1 auto; margin-top: 10px; }
+.product-tutorial-example-image img { display: block; max-width: 100%; max-height: min(72dvh, 720px); min-height: 0; object-fit: contain; }
+.product-tutorial-caption { margin: 10px 0 0; font-size: .8rem; line-height: 1.6; flex: none; }
+.product-tutorial-example-panel footer { display: flex; align-items: center; justify-content: center; gap: 16px; padding-top: 12px; flex: none; }
+.product-tutorial-info { min-height: 0; overflow-y: auto; overscroll-behavior: contain; font-size: .85rem; line-height: 1.65; }
+.product-tutorial-info p { white-space: pre-line; }
+.product-tutorial-info h3 { margin: 14px 0 4px; font-size: .95rem; }
+@media (max-width: 560px) {
+  .product-title-row { padding-inline: 88px; }
+  .product-title-row h1 { font-size: clamp(.8rem, 4vw, 1.32rem); white-space: nowrap; }
+  .product-tutorial-toggle { top: 6px; left: 6px; padding-inline: 6px; font-size: .72rem; }
+  .product-tutorial-example-panel { padding: 10px; }
+}

@@ -1,5 +1,6 @@
 import { browserCatalog } from "./business/browser-catalog";
 import { createDisplayLocaleAdapter, displayTooltipText } from "./display-locale";
+import { ProductTutorial } from "./product-tutorial";
 import { WorkspaceDomainError } from "./business/model";
 import { automaticReconcileResolution, buildReconcileDraftFromBrowserRuntime, type ReconcileDraftV1, type ReconcileResolutionV1 } from "./business/reconcile";
 import { ProductWorkspaceController, WorkspaceRevisionConflictError, type ProductWorkspaceContext } from "./product-workspace";
@@ -42,6 +43,7 @@ import { buildCurrentInstanceUpdate, hasCurrentInstanceUpdate } from "./product-
 import { buildInventorySummaryGroups, resolveSummaryExperienceScope, summarySelectionStillVisible, type InventorySummaryGroup, type SummaryExperienceScope } from "./product-summary-view";
 import { canUseUiOnlyHistory, pruneStaleUiOnlyHistory } from "./product-review-history";
 import "./product.css";
+import "./product-tutorial.css";
 
 type Quality = "橙" | "紫" | "蓝" | "绿" | "白";
 type Pool = ProductImportPool;
@@ -73,6 +75,8 @@ const displayLocaleAdapter = createDisplayLocaleAdapter(root, { onChange: () => 
 const storedTab = readStorage<ProductTab>("yuanstar.product.tab");
 const storedSelected = readStorage<string>("yuanstar.product.selected");
 let activeTab: ProductTab = storedTab === "import" || storedTab === "review" ? storedTab : "review";
+let productTutorial: ProductTutorial | null = null;
+const tutorialSessionStartedAt = Date.now();
 let selectedId = typeof storedSelected === "string" ? storedSelected : "";
 let selectedPane: Pane = "current";
 let kindFilter = "全部";
@@ -197,6 +201,13 @@ function selectedStar(): Star | null {
 
 function applyWorkspaceContext(context: ProductWorkspaceContext): void {
   workspaceContext = context;
+  // Timestamp and pristine first revision prove creation in this session; empty old accounts do not qualify.
+  const snapshot = context.record.snapshot;
+  const provenNew = Date.parse(context.account.createdAt) >= tutorialSessionStartedAt && Date.parse(context.account.createdAt) <= Date.now() && context.record.revision === 1 &&
+    snapshot.inventory.length === 0 && Object.keys(snapshot.importReview.imageAudit).length === 0 &&
+    Object.keys(snapshot.planTargets).length === 0 && snapshot.bag.currentCount === null && snapshot.bag.capacity === null &&
+    snapshot.experience.orange === null && snapshot.experience.purple === null && snapshot.experience.white === null;
+  productTutorial?.observeWorkspace(context.account.accountId, provenNew);
   stars = context.record.snapshot.inventory.map((item) => ({ ...item, targetLevel: context.record.snapshot.planTargets[item.starInstanceId] ?? item.level }));
   if (pendingOnly) normalizePendingSelection();
   else if (!stars.some((star) => star.starInstanceId === selectedId)) selectedId = stars[0]?.starInstanceId ?? "";
@@ -704,7 +715,7 @@ function shellTemplate(): string {
   const traditional = displayLocaleAdapter.locale === "zh-Hant";
   const toggleLabel = traditional ? "繁" : "简";
   const toggleHint = traditional ? "切換為簡體" : "切换为繁体";
-  return `<div class="product-shell"><header class="product-header"><div class="product-title-row"><h1>YuanStar 星石整理</h1><button class="display-locale-toggle" data-display-locale-toggle data-display-locale-ignore type="button" title="${toggleHint}" aria-label="${toggleHint}">${toggleLabel}</button></div><div class="product-nav-row"><nav class="product-tabs" aria-label="产品页面"><button class="product-tab${activeTab === "import" ? " is-active" : ""}" data-tab="import" type="button">导入识别</button><button class="product-tab${activeTab === "review" ? " is-active" : ""}" data-tab="review" type="button">背包整理</button></nav><div class="data-menu"><button class="data-menu-trigger" id="data-menu-trigger" aria-expanded="${dataMenuOpen}" aria-haspopup="menu" type="button">数据 <span>▾</span></button>${dataMenuOpen ? `<div class="data-menu-popover" role="menu"><button data-data-action="import" type="button" role="menuitem">导入数据</button><button data-data-action="export-json" type="button" role="menuitem">导出 JSON</button><button data-data-action="export-xlsx" type="button" role="menuitem">导出 XLSX</button></div>` : ""}</div></div></header><main id="page-content">${importing ? importTemplate() : reviewTemplate()}${!importing ? workspaceToolsTemplate() : ""}</main>${reviewSourcePreviewTemplate()}${dataToolsTemplate()}${ocrConfirmTemplate()}${deleteAccountConfirmTemplate()}${toastTemplate()}</div>`;
+  return `<div class="product-shell"><header class="product-header"><div class="product-title-row"><button class="product-tutorial-toggle" type="button" title="${importing ? "查看导入识别教程" : "查看背包整理教程"}" aria-label="${importing ? "查看导入识别教程" : "查看背包整理教程"}">？查看教程</button><h1>YuanStar 星石整理</h1><button class="display-locale-toggle" data-display-locale-toggle data-display-locale-ignore type="button" title="${toggleHint}" aria-label="${toggleHint}">${toggleLabel}</button></div><div class="product-nav-row"><nav class="product-tabs" aria-label="产品页面"><button class="product-tab${activeTab === "import" ? " is-active" : ""}" data-tab="import" type="button">导入识别</button><button class="product-tab${activeTab === "review" ? " is-active" : ""}" data-tab="review" type="button">背包整理</button></nav><div class="data-menu"><button class="data-menu-trigger" id="data-menu-trigger" aria-expanded="${dataMenuOpen}" aria-haspopup="menu" type="button">数据 <span>▾</span></button>${dataMenuOpen ? `<div class="data-menu-popover" role="menu"><button data-data-action="import" type="button" role="menuitem">导入数据</button><button data-data-action="export-json" type="button" role="menuitem">导出 JSON</button><button data-data-action="export-xlsx" type="button" role="menuitem">导出 XLSX</button></div>` : ""}</div></div></header><main id="page-content">${importing ? importTemplate() : reviewTemplate()}${!importing ? workspaceToolsTemplate() : ""}</main>${reviewSourcePreviewTemplate()}${dataToolsTemplate()}${ocrConfirmTemplate()}${deleteAccountConfirmTemplate()}${toastTemplate()}</div>`;
 }
 
 function captureScroll(): Record<Pane, number> {
@@ -758,6 +769,7 @@ function renderReview(intent: ReviewScrollIntent = "keep", viewport: ReviewViewp
     else alignCounterpartRow(intent);
   });
   if (intent === "keep") requestAnimationFrame(() => restoreReviewViewport(viewport));
+  productTutorial?.contextChanged();
 }
 
 function captureImportPoolScroll(): void {
@@ -784,6 +796,7 @@ function renderPage(): void {
   if (activeTab === "review") bindReviewControls();
   else { bindImportControls(); requestAnimationFrame(restoreImportPoolScroll); }
   displayLocaleAdapter.apply();
+  productTutorial?.contextChanged();
 }
 
 function setActiveTab(tab: ProductTab): void { hideStarDescription(); if (activeTab === "import") captureImportPoolScroll(); activeTab = tab; writeStorage("yuanstar.product.tab", tab); renderPage(); if (tab === "review" && !workspaceContext) void loadProductWorkspace(); }
@@ -1054,6 +1067,7 @@ function activatePane(pane: Pane): void {
 }
 
 function bindShellControls(): void {
+  root.querySelector<HTMLButtonElement>(".product-tutorial-toggle")?.addEventListener("click", () => productTutorial?.open());
   root.querySelectorAll<HTMLButtonElement>("[data-tab]").forEach((button) => button.addEventListener("click", () => setActiveTab(button.dataset.tab === "import" ? "import" : "review")));
   root.querySelector<HTMLSelectElement>("[data-current-account]")?.addEventListener("change", (event) => { void switchProductAccount((event.target as HTMLSelectElement).value); });
   const accountName = root.querySelector<HTMLInputElement>("[data-account-name]");
@@ -1755,6 +1769,7 @@ async function commitOcrDraft(draft: ReconcileDraftV1, resolution: ReconcileReso
       usePersistedReview: () => syncPendingOcrReviewFromWorkspace({ runContext: null, evidence, persisted: true }),
     });
     if (outcome === "stale") return;
+    productTutorial?.ocrCompleted(runContext.accountId);
     reviewSaveState = "saved";
     reviewError = "";
     const warning = "识别结果已保存，但待识别图片缓存清理失败；不会重复应用本次结果。";
@@ -1779,7 +1794,7 @@ async function commitOcrDraft(draft: ReconcileDraftV1, resolution: ReconcileReso
       importNotice(error instanceof Error ? `识别结果未应用：${error.message}` : "识别结果未应用，当前工作区保持不变。", true);
     }
     renderPage();
-  } finally { importDraftTransitioning = false; }
+  } finally { importDraftTransitioning = false; productTutorial?.contextChanged(); }
 }
 
 async function beginOcrRun(): Promise<void> {
@@ -2072,10 +2087,15 @@ function bindGlobalPaste(): void {
 }
 
 bindGlobalPaste();
+productTutorial = new ProductTutorial({ root, context: () => ({
+  tab: activeTab, account: workspaceContext?.account.accountId ?? null, locale: displayLocaleAdapter.locale,
+  ready: !!workspaceContext && reviewSaveState === "saved" && importDraftReadyAccountId === workspaceContext.account.accountId && !importDraftTransitioning,
+  hasEvidence: !!workspaceContext && Object.keys(workspaceContext.record.snapshot.importReview.imageAudit).length > 0,
+}) });
 displayLocaleAdapter.start();
 renderPage();
 startProductOcrLifecycle(ocrCoordinator);
 void loadExperienceRules();
 void loadProductWorkspace();
-window.addEventListener("pagehide", () => { cancelImportTouchDrag?.(); importDraftController.releaseAll(); });
+window.addEventListener("pagehide", () => { productTutorial?.dispose(); cancelImportTouchDrag?.(); importDraftController.releaseAll(); });
 window.addEventListener("pageshow", (event) => { if (event.persisted) window.location.reload(); });

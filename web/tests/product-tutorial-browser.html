@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tutorial DOM regression</title></head>
+<body><h1>Tutorial DOM regression</h1><button id="run">运行教程 DOM 回归</button><pre id="result">尚未运行</pre><div id="fixture"></div>
+<script type="module">
+import { ProductTutorial } from '/src/product-tutorial.ts';
+import { tutorialStorageKey, tutorialSeen } from '/src/product-tutorial-steps.ts';
+import '/src/product-tutorial.css';
+const fixture = document.querySelector('#fixture'), result = document.querySelector('#result');
+const paint = async () => { for (let i=0;i<10;i++) await new Promise(requestAnimationFrame); };
+const assert = (value, label) => { if (!value) throw Error(label); logs.push('PASS ' + label); };
+let logs = [];
+document.querySelector('#run').onclick = async () => {
+  document.querySelector('#run').disabled = true; logs = [];
+  let tour;
+  try {
+    const account = 'dom-regression-' + crypto.randomUUID();
+    const context = { tab: 'import', account, locale: 'zh-Hans', ready: true, hasEvidence: false };
+    const markup = '<div class="file-picker-panel">上传</div><div class="import-pools">分类</div><button data-confirm-pool>确认本池</button><button data-confirm-all-pools>一键确认全部分类</button><div class="overlap-grid">重叠</div><button data-start-ocr>开始识别</button><div id="import-progress-panel">进度</div><div class="ocr-review">核对</div><div class="inventory-grid">背包</div><div class="review-toolbar">筛选</div><div class="current-editor">编辑</div><div class="plan-editor">计划</div><div class="pending-only-toggle">待养成</div><div class="experience-section">经验</div><div class="review-workspace-tools">历史</div>';
+    fixture.innerHTML = markup;
+    let mutations = 0;
+    fixture.querySelector('[data-start-ocr]').onclick = () => mutations++;
+    tour = new ProductTutorial({root:fixture,context:()=>context});
+    const card = () => document.querySelector('.product-tutorial-card');
+    const click = async selector => { const button=card().querySelector(selector); if(!button) throw Error(selector); button.click(); await paint(); };
+    tour.observeWorkspace(account, false); tour.contextChanged(); await paint();
+    assert(!tour.isOpen, 'historical/unknown account stays quiet');
+    tour.open(); await paint(); assert(card().dataset.step==='upload', 'manual open starts at recognition one');
+    assert(card().querySelector('[data-tour-prev]').disabled, 'previous clamps at first step');
+    await click('[data-tour-example]');
+    assert(document.querySelector('[role="dialog"] img').src.endsWith('recognition-main-example.jpg'), 'first original example');
+    document.querySelector('[data-example-next]').click(); await paint();
+    assert(document.querySelector('[role="dialog"] img').src.endsWith('recognition-support-example.jpg'), 'next original example');
+    document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); await paint();
+    assert(!document.querySelector('[role="dialog"]') && card().dataset.step==='upload', 'Escape closes only example and preserves step');
+    await click('[data-tour-next]'); await click('[data-tour-next]');
+    assert(fixture.querySelectorAll('.product-tutorial-related').length===2, 'related confirmation targets highlighted');
+    context.locale='zh-Hant'; tour.contextChanged(); await paint();
+    assert(card().dataset.step==='confirm' && card().textContent.includes('確認分類'), 'locale keeps mode and step');
+    const old = fixture.querySelector('[data-confirm-pool]'); old.remove();
+    const replacement = document.createElement('button'); replacement.dataset.confirmPool=''; replacement.textContent='替换确认'; fixture.append(replacement); await paint();
+    assert(!old.classList.contains('product-tutorial-related') && replacement.classList.contains('product-tutorial-related'), 'replacement target re-resolved; detached target cleaned');
+    await click('[data-tour-next]'); await click('[data-tour-next]'); fixture.querySelector('[data-start-ocr]').remove(); await paint();
+    assert(card().dataset.step==='start' && card().querySelector('[data-tour-next]'), 'missing target keeps navigable card');
+    await click('[data-tour-next]'); await click('[data-tour-next]');
+    assert(!tour.isOpen && !document.querySelector('.product-tutorial') && fixture.querySelectorAll('.product-tutorial-related').length===0, 'finish removes overlay and all outlines');
+    assert(mutations===0, 'navigation never invokes OCR or business actions');
+    tour.open(); await paint(); assert(card().dataset.step==='upload', 'replay resets to one');
+    context.tab='review'; tour.contextChanged(); await paint(); assert(!tour.isOpen, 'tab switch closes without opening another mode');
+    tour.open(); await paint(); assert(card().dataset.step==='review' && card().dataset.mode==='bag', 'review manual entry selects bag');
+    await click('[data-tour-example]'); assert(document.querySelector('[role="dialog"]').textContent.includes('取消'), 'review info retains real action labels');
+    document.querySelector('[data-example-close]').click(); await paint();
+    for(let i=1;i<7;i++) await click('[data-tour-next]');
+    assert(card().dataset.step==='history', 'seven bag steps reachable');
+    await click('[data-tour-prev]'); assert(card().dataset.step==='experience', 'previous navigation');
+    tour.close(); await paint();
+    fixture.innerHTML=''; tour.open(); await paint(); assert(card().dataset.step==='review', 'empty workspace safely degrades'); tour.close();
+    for(let i=0;i<5;i++){ tour.open(); await paint(); tour.close(); }
+    assert(document.querySelectorAll('.product-tutorial').length===0, 'repeated open/close leaves no stacking');
+    fixture.innerHTML=markup;
+    const fresh=account+'-fresh'; context.account=fresh; context.tab='import'; context.locale='zh-Hans'; context.hasEvidence=false;
+    tour.observeWorkspace(fresh,true); tour.contextChanged(); await paint(); assert(tour.isOpen, 'proven new account auto recognition'); tour.close();
+    context.tab='review'; tour.contextChanged(); await paint(); assert(!tour.isOpen,'review alone does not auto bag');
+    tour.ocrCompleted(fresh+'-other'); tour.contextChanged(); await paint(); assert(!tour.isOpen,'wrong account OCR cannot auto bag');
+    tour.ocrCompleted(fresh); tour.contextChanged(); await paint(); assert(!tour.isOpen,'successful signal without persisted evidence cannot auto bag');
+    context.hasEvidence=true; tour.contextChanged(); await paint(); assert(card()?.dataset.mode==='bag','successful OCR plus review evidence auto bag'); tour.close();
+    tour.contextChanged(); await paint(); assert(!tour.isOpen,'seen bag stays closed');
+    assert(tutorialSeen(tutorialStorageKey(fresh)) && tutorialSeen(tutorialStorageKey(fresh,'bag')), 'recognition and bag persist separately');
+    tour.dispose(); fixture.innerHTML=markup; window.dispatchEvent(new Event('resize')); document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); await paint();
+    assert(!document.querySelector('.product-tutorial') && !fixture.querySelector('.product-tutorial-related'), 'disposed listeners and observers cannot revive highlights');
+    result.textContent=logs.join('\n')+'\nPASS all '+logs.length+' DOM checks'; result.dataset.status='pass';
+  } catch(error) { result.textContent=logs.join('\n')+'\nFAIL '+error.stack; result.dataset.status='fail'; }
+  finally { tour?.dispose(); document.querySelector('#run').disabled=false; }
+};
+</script></body></html>

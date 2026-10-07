@@ -1,0 +1,18 @@
+import assert from "node:assert/strict";
+import { readFileSync, existsSync } from "node:fs";
+const source = readFileSync(new URL("../src/product.ts", import.meta.url), "utf8");
+const renderer = readFileSync(new URL("../src/product-tutorial.ts", import.meta.url), "utf8");
+const steps = readFileSync(new URL("../src/product-tutorial-steps.ts", import.meta.url), "utf8");
+assert.equal((source.match(/class="product-tutorial-toggle"/g) ?? []).length, 1);
+assert.match(source, /class="product-tutorial-toggle"[^>]+>？查看教程<\/button><h1>/);
+assert.match(source, /title="\$\{importing \? "查看导入识别教程" : "查看背包整理教程"\}" aria-label="\$\{importing \? "查看导入识别教程" : "查看背包整理教程"\}"/);
+assert.match(source, /Date\.parse\(context\.account\.createdAt\) >= tutorialSessionStartedAt/);
+assert.match(source, /Date\.parse\(context\.account\.createdAt\) <= Date\.now\(\)/);
+assert.match(source, /context\.record\.revision === 1/);
+const commit = source.slice(source.indexOf("async function commitOcrDraft("), source.indexOf("async function beginOcrRun("));
+assert.ok(commit.indexOf('if (outcome === "stale") return;') < commit.indexOf("productTutorial?.ocrCompleted"));
+assert.match(commit, /finally \{ importDraftTransitioning = false; productTutorial\?\.contextChanged\(\);/);
+assert.doesNotMatch(renderer + steps, /MaaYuan|\bMAA\b|MuMu|CaptureBatch|maayuan_capture|maayuan_mumu|star_capture_ready|cloud capture|自动采集|自动截图|origin hint|transport retry/i);
+assert.doesNotMatch(renderer, /workspaceController|beginOcrRun|setActiveTab|\.click\(|dispatchEvent|\.value\s*=/);
+for (const name of ["main", "support", "exp", "overlap"]) assert.ok(existsSync(new URL(`../public/tutorial/star/recognition-${name}-example.jpg`, import.meta.url)));
+console.log("PASS standalone header, successful commit boundary, pristine creation proof, assets and explanatory-only layer");
