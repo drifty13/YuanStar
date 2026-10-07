@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Custom select DOM regression</title></head>
+<body><h1>Custom select DOM regression</h1><button id="run">运行下拉框 DOM 回归</button><pre id="result">尚未运行</pre><main id="fixture"></main>
+<script type="module">
+import { ProductCustomSelects } from '/src/product-custom-select.ts';
+import { createDisplayLocaleAdapter } from '/src/display-locale.ts';
+import '/src/product.css'; import '/src/product-custom-select.css';
+const root=document.querySelector('#fixture'), result=document.querySelector('#result');
+const paint=async()=>{for(let i=0;i<4;i++)await new Promise(requestAnimationFrame);};
+let logs=[]; const assert=(value,label)=>{if(!value)throw Error(label);logs.push('PASS '+label);};
+document.querySelector('#run').onclick=async()=>{
+  document.querySelector('#run').disabled=true; logs=[]; let adapter,locale;
+  try {
+    root.innerHTML='<section class="current-editor"><label>大类<select id="kind"><option>主星</option><option>辅星</option></select></label><label>标准名称<select id="name"><option value="">请选择</option><option value="天府">天府</option><option value="巨门" selected>巨门</option></select></label><input id="editor-end"></section><label for="external">当前账号</label><select id="external"><option value="a">账号一</option><option value="b">账号二</option></select><label>游戏版本<select id="game"><option>如鸢</option><option>代号鸢</option></select></label><label>品质<select id="quality" disabled><option value="">请选择</option><option>橙</option></select></label><button id="outside">其它按钮</button>';
+    adapter=new ProductCustomSelects(root);
+    const sync=()=>{adapter.prepare();locale.apply();adapter.enhance();};
+    locale=createDisplayLocaleAdapter(root,{storage:{getItem(){return null},setItem(){}},onChange:sync}); locale.start(); sync();
+    const native=id=>root.querySelector('#'+id), trigger=id=>native(id).parentElement.querySelector('button');
+    const panel=()=>document.querySelector('.product-custom-select-list');
+    const key=(element,key)=>element.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}));
+    let changed=0,blurs=0,commits=0;
+    root.addEventListener('change',()=>changed++); native('game').addEventListener('blur',()=>blurs++);
+    const editor=root.querySelector('.current-editor');
+    editor.addEventListener('keydown',event=>{if(event.key==='Enter')commits++;});
+    editor.addEventListener('focusout',()=>requestAnimationFrame(()=>{if(!editor.contains(document.activeElement))commits++;}));
+    assert(root.querySelectorAll('select').length===5&&root.querySelectorAll('.product-custom-select-trigger').length===5,'generic enhancement covers every select');
+    assert(trigger('name').textContent==='巨门','trigger reflects selected native value');
+    assert(trigger('external').getAttribute('aria-label')==='当前账号','external label supplies accessible name');
+    assert(native('name').tabIndex===-1&&native('name').getAttribute('aria-hidden')==='true','native is backing only, not a duplicate tab stop');
+    trigger('name').click(); await paint();
+    assert(panel().parentElement===document.body&&panel().getAttribute('role')==='listbox','body portal listbox');
+    assert(panel().querySelector('[aria-selected=true]').textContent==='巨门','selected option highlighted');
+    assert(document.activeElement===trigger('name'),'open retains trigger focus inside editor');
+    panel().querySelector('[data-select-option="2"]').click(); await paint();
+    assert(native('name').value==='巨门'&&native('name').selectedIndex===2&&changed===0&&!panel(),'reselect current name preserves value/index without change and closes');
+    assert(document.activeElement===trigger('name')&&commits===0,'reselect current name retains trigger focus without editor mutation');
+    trigger('name').click(); await paint();
+    panel().querySelector('[data-select-option="1"]').dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true}));
+    panel().querySelector('[data-select-option="1"]').click(); await paint();
+    assert(native('name').value==='天府'&&changed===1&&!panel(),'option updates native, bubbles change once, closes');
+    assert(commits===0,'portal choice does not prematurely commit the current editor');
+    key(trigger('name'),'Enter'); await paint(); assert(panel()&&commits===0,'Enter opens without bubbling into editor commit');
+    key(trigger('name'),'Home'); assert(panel().querySelector('.is-active').dataset.selectOption==='0','Home first option');
+    key(trigger('name'),'End'); assert(panel().querySelector('.is-active').dataset.selectOption==='2','End last option');
+    assert(panel().querySelector('[aria-selected=true]').dataset.selectOption==='1','active and selected are independent');
+    key(trigger('name'),'ArrowUp'); assert(panel().querySelector('.is-active').dataset.selectOption==='1','ArrowUp moves active');
+    key(trigger('name'),'ArrowDown'); key(trigger('name'),' '); await paint(); assert(native('name').value==='巨门'&&!panel(),'ArrowDown and Space choose');
+    key(trigger('name'),' '); await paint(); assert(panel(),'Space opens'); key(trigger('name'),'Escape'); await paint(); assert(!panel()&&document.activeElement===trigger('name'),'Escape closes and returns focus');
+    key(trigger('name'),'ArrowDown'); await paint(); assert(panel(),'ArrowDown opens');
+    const tabEvent=new KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true});trigger('name').dispatchEvent(tabEvent);await paint();assert(!panel()&&!tabEvent.defaultPrevented,'Tab closes without being swallowed');
+    key(trigger('name'),'ArrowUp');await paint();assert(panel(),'ArrowUp opens');
+    trigger('kind').click();await paint();assert(document.querySelectorAll('.product-custom-select-list').length===1&&trigger('name').getAttribute('aria-expanded')==='false','only one select opens at a time');
+    root.querySelector('#outside').click();await paint();assert(!panel(),'click outside closes');
+    trigger('quality').click();await paint();assert(!panel()&&trigger('quality').disabled&&trigger('quality').getAttribute('aria-disabled')==='true','disabled trigger cannot open');
+    native('quality').disabled=false;await paint();trigger('quality').click();await paint();assert(panel().querySelector('[aria-selected=true]').textContent==='请选择','empty option remains selectable placeholder');
+    native('quality').disabled=true;await paint();assert(!panel()&&trigger('quality').disabled,'native disabled update closes and syncs');
+    native('kind').addEventListener('change',()=>{native('name').innerHTML=native('kind').value==='辅星'?'<option value="">请选择</option><option value="天钺">天钺</option><option value="解神">解神</option>':'<option value="">请选择</option><option value="天府">天府</option>';native('name').value='';sync();});
+    native('name').value='天府';adapter.refresh(native('name'));
+    const beforeKindChange=changed;
+    trigger('kind').click();panel().querySelector('[data-select-option="0"]').click();await paint();
+    assert(changed===beforeKindChange&&native('kind').value==='主星'&&native('kind').selectedIndex===0&&native('name').value==='天府','reselect current kind never dispatches change or clears current name');
+    assert(!panel()&&document.activeElement===trigger('kind'),'reselect current kind closes and retains trigger focus');
+    trigger('kind').click();panel().querySelector('[data-select-option="1"]').click();await paint();
+    assert(changed===beforeKindChange+1&&native('kind').selectedIndex===1,'different kind selects exact native index and bubbles exactly one change');
+    assert(native('kind').value==='辅星'&&native('name').value===''&&trigger('name').textContent==='请选择','kind change clears old name trigger/value');
+    trigger('name').click();await paint();assert(panel().textContent.includes('天钺')&&!panel().textContent.includes('天府'),'support catalog updates immediately');adapter.close();
+    native('name').value='解神';adapter.refresh(native('name'));assert(trigger('name').textContent==='解神','programmatic value plus refresh syncs');
+    trigger('kind').click();panel().querySelector('[data-select-option="0"]').click();await paint();trigger('name').click();await paint();assert(panel().textContent.includes('天府')&&!panel().textContent.includes('天钺'),'reverse kind change restores main catalog');adapter.close();
+    trigger('game').click();panel().querySelector('[data-select-option="1"]').click();await paint();assert(native('game').value==='代号鸢','game version choice preserves native value');root.querySelector('#outside').focus();await paint();assert(blurs>0,'trigger blur forwards existing native metadata save path');
+    native('kind').value='辅星';adapter.refresh(native('kind'));locale.setLocale('zh-Hant');await paint();
+    assert(native('kind').value==='辅星'&&trigger('kind').textContent==='輔星','Traditional label never changes implicit canonical native value');
+    trigger('kind').click();await paint();assert(panel().textContent.includes('輔星')&&!panel().textContent.includes('辅星'),'options follow Traditional display');adapter.close();
+    locale.setLocale('zh-Hans');await paint();assert(trigger('kind').textContent==='辅星','back to Simplified updates trigger');
+    native('name').innerHTML=Array.from({length:40},(_,i)=>`<option value="${i}" ${i===30?'selected':''}>长名称${i}</option>`).join('');sync();trigger('name').click();await paint();
+    assert(panel().scrollHeight>panel().clientHeight&&panel().scrollTop>0,'long list scrolls and initially reveals selected item');
+    key(trigger('name'),'Home');key(trigger('name'),'Enter');await paint();assert(native('name').value==='0','long catalog keyboard choice');
+    native('name').innerHTML='<option value="same" selected>同值一</option><option value="same">同值二</option>';sync();
+    const beforeDuplicateChange=changed;
+    trigger('name').click();panel().querySelector('[data-select-option="1"]').click();await paint();
+    assert(native('name').value==='same'&&native('name').selectedIndex===1&&trigger('name').textContent==='同值二'&&changed===beforeDuplicateChange+1,'different index with duplicate value selects exact option and changes once');
+    trigger('name').click();key(trigger('name'),'Enter');await paint();
+    assert(native('name').selectedIndex===1&&changed===beforeDuplicateChange+1&&!panel()&&document.activeElement===trigger('name'),'keyboard reselect with duplicate value closes without another change');
+    trigger('name').click();window.dispatchEvent(new Event('resize'));await paint();assert(!panel(),'resize safely closes');
+    trigger('name').click();window.dispatchEvent(new Event('scroll'));await paint();assert(!panel(),'external page scroll safely closes');
+    trigger('name').click();const modal=document.createElement('div');modal.setAttribute('role','dialog');root.append(modal);await paint();assert(!panel(),'dialog creation closes dropdown');modal.remove();
+    const oldTrigger=trigger('name');oldTrigger.click();root.innerHTML='<label>未来新增字段<select id="future"><option>一</option><option selected>二</option></select></label>';await paint();assert(!panel(),'detached open target removes portal');sync();
+    assert(root.querySelectorAll('.product-custom-select-trigger').length===1,'rerender cleans old state and enhances unknown future select');oldTrigger.click();await paint();assert(!panel(),'detached trigger listener removed');sync();sync();assert(root.querySelectorAll('.product-custom-select-trigger').length===1,'repeated enhancement never duplicates');
+    native('future').innerHTML='<option>三</option><option selected>四</option>';await paint();assert(trigger('future').textContent==='四','per-select observer syncs dynamic options without a page rerender');
+    root.querySelector('label').click();await paint();assert(panel()&&document.activeElement===trigger('future'),'label click targets custom control');
+    adapter.disposeAll();await paint();assert(!panel()&&!root.querySelector('.product-custom-select-trigger')&&!native('future').hasAttribute('aria-hidden'),'dispose restores backing control and removes floating UI');oldTrigger.click();window.dispatchEvent(new Event('resize'));await paint();assert(!panel(),'disposed callbacks cannot revive portal');
+    result.textContent=logs.join('\n')+'\nPASS all '+logs.length+' DOM checks';result.dataset.status='pass';
+  } catch(error){result.textContent=logs.join('\n')+'\nFAIL '+error.stack;result.dataset.status='fail';}
+  finally{adapter?.disposeAll();locale?.stop();document.querySelector('#run').disabled=false;}
+};
+</script></body></html>

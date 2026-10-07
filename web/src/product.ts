@@ -1,6 +1,7 @@
 import { browserCatalog } from "./business/browser-catalog";
 import { createDisplayLocaleAdapter, displayTooltipText } from "./display-locale";
 import { ProductTutorial } from "./product-tutorial";
+import { ProductCustomSelects } from "./product-custom-select";
 import { WorkspaceDomainError } from "./business/model";
 import { automaticReconcileResolution, buildReconcileDraftFromBrowserRuntime, type ReconcileDraftV1, type ReconcileResolutionV1 } from "./business/reconcile";
 import { ProductWorkspaceController, WorkspaceRevisionConflictError, type ProductWorkspaceContext } from "./product-workspace";
@@ -44,6 +45,7 @@ import { buildInventorySummaryGroups, resolveSummaryExperienceScope, summarySele
 import { canUseUiOnlyHistory, pruneStaleUiOnlyHistory } from "./product-review-history";
 import "./product.css";
 import "./product-tutorial.css";
+import "./product-custom-select.css";
 
 type Quality = "橙" | "紫" | "蓝" | "绿" | "白";
 type Pool = ProductImportPool;
@@ -76,6 +78,7 @@ const storedTab = readStorage<ProductTab>("yuanstar.product.tab");
 const storedSelected = readStorage<string>("yuanstar.product.selected");
 let activeTab: ProductTab = storedTab === "import" || storedTab === "review" ? storedTab : "review";
 let productTutorial: ProductTutorial | null = null;
+let productSelects: ProductCustomSelects | null = null;
 const tutorialSessionStartedAt = Date.now();
 let selectedId = typeof storedSelected === "string" ? storedSelected : "";
 let selectedPane: Pane = "current";
@@ -755,6 +758,7 @@ function restoreReviewViewport(snapshot: ReviewViewportSnapshot | null): void {
 }
 
 function renderReview(intent: ReviewScrollIntent = "keep", viewport: ReviewViewportSnapshot | null = intent === "top" ? null : captureReviewViewport()): void {
+  productSelects?.disposeAll();
   hideStarDescription();
   const content = root.querySelector<HTMLElement>("#page-content");
   if (!content) return;
@@ -762,6 +766,7 @@ function renderReview(intent: ReviewScrollIntent = "keep", viewport: ReviewViewp
   content.innerHTML = `${reviewTemplate()}${workspaceToolsTemplate()}`;
   restoreScroll(scroll);
   bindReviewControls();
+  syncProductSelects();
   if (intent === "top") requestAnimationFrame(scrollSelectedRowsToTop);
   if (typeof intent === "object") requestAnimationFrame(() => {
     if ("starInstanceId" in intent) scrollStarRowsToVisualRow(intent);
@@ -786,7 +791,14 @@ function restoreImportPoolScroll(): void {
   });
 }
 
+function syncProductSelects(): void {
+  productSelects?.prepare();
+  displayLocaleAdapter.apply();
+  productSelects?.enhance();
+}
+
 function renderPage(): void {
+  productSelects?.disposeAll();
   cancelImportTouchDrag?.();
   cancelImportTouchDrag = null;
   hideStarDescription();
@@ -795,7 +807,7 @@ function renderPage(): void {
   bindShellControls();
   if (activeTab === "review") bindReviewControls();
   else { bindImportControls(); requestAnimationFrame(restoreImportPoolScroll); }
-  displayLocaleAdapter.apply();
+  syncProductSelects();
   productTutorial?.contextChanged();
 }
 
@@ -1046,6 +1058,7 @@ function refreshReviewTables(): void {
   if (planCount) planCount.textContent = reviewCountLabel("plan");
   refreshExperienceNeeds();
   bindReviewRows();
+  syncProductSelects();
 }
 
 function normalizeSummarySelection(): void {
@@ -1480,7 +1493,7 @@ function bindReviewControls(): void {
       activatePane("current");
       if (name === "kind") {
         const nameSelect = currentPanel.querySelector<HTMLSelectElement>("[data-current-field=\"name\"]");
-        if (nameSelect) { nameSelect.innerHTML = nameOptions(draft.kind, draft.name); nameSelect.value = draft.name; }
+        if (nameSelect) { nameSelect.innerHTML = nameOptions(draft.kind, draft.name); nameSelect.value = draft.name; syncProductSelects(); }
       }
     };
     field.addEventListener(field instanceof HTMLSelectElement ? "change" : "input", update);
@@ -2087,6 +2100,7 @@ function bindGlobalPaste(): void {
 }
 
 bindGlobalPaste();
+productSelects = new ProductCustomSelects(root);
 productTutorial = new ProductTutorial({ root, context: () => ({
   tab: activeTab, account: workspaceContext?.account.accountId ?? null, locale: displayLocaleAdapter.locale,
   ready: !!workspaceContext && reviewSaveState === "saved" && importDraftReadyAccountId === workspaceContext.account.accountId && !importDraftTransitioning,
@@ -2097,5 +2111,5 @@ renderPage();
 startProductOcrLifecycle(ocrCoordinator);
 void loadExperienceRules();
 void loadProductWorkspace();
-window.addEventListener("pagehide", () => { productTutorial?.dispose(); cancelImportTouchDrag?.(); importDraftController.releaseAll(); });
+window.addEventListener("pagehide", () => { productSelects?.disposeAll(); productTutorial?.dispose(); cancelImportTouchDrag?.(); importDraftController.releaseAll(); });
 window.addEventListener("pageshow", (event) => { if (event.persisted) window.location.reload(); });
