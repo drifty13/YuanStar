@@ -685,7 +685,7 @@ function importTemplate(): string {
   const accountOptions = (availableAccounts.length ? availableAccounts : account ? [account] : []).map((item) => `<option value="${html(item.accountId)}" data-display-locale-ignore ${item.accountId === account?.accountId ? "selected" : ""}>${html(`${item.gameVersion} · ${item.displayName}`)}</option>`).join("");
   return `<section class="import-page" aria-label="导入识别">
     <section class="import-account-requirements"><article class="import-account-panel"><header><p class="section-kicker">当前账号</p><h2>本机工作区账号</h2></header><div class="account-fields"><label>当前账号<select data-current-account aria-label="当前账号" ${isOcrLocked() ? "disabled" : ""}>${accountOptions || `<option>${html(accountLabel)}</option>`}</select></label><label>游戏版本<select data-account-game-version aria-label="游戏版本" ${isOcrLocked() ? "disabled" : ""}>${(["如鸢", "代号鸢"] as const).map((version) => `<option value="${version}" ${version === gameVersionLabel ? "selected" : ""}>${version}</option>`).join("")}</select></label><label>账号名称<input data-account-name value="${html(accountNameLabel)}" ${isOcrLocked() ? "disabled" : ""} /></label></div><div class="account-actions"><button class="button button-secondary positive-action" data-create-account type="button" ${isOcrLocked() ? "disabled" : ""}>新增账号</button><button class="button button-tertiary danger-action" data-delete-current-account type="button" ${isOcrLocked() ? "disabled" : ""}>删除当前账号</button></div></article><article class="screenshot-requirements"><header><p class="section-kicker">截图要求</p><h2>导入前确认</h2></header><ul><li>请上传同一账号、同一设备、同一次背包查看过程中的截图；截图过程中不要分解、升级、获得或消耗星石。</li><li>优先上传清晰、完整的原始截图；主星和辅星尽量减少前后截图重叠。</li><li>每张截图优先保证顶部第一行完整；页面底部半隐没行可以保留，后续可作为残片忽略。</li><li>若两张截图存在重复行，请明确标记前图和后图；主星、辅星通常各 1–2 组。</li><li>经验星石建议上传一张完整清晰页面；若未标记重叠不会阻断识别，但可能导致识别的星石数量偏高。</li></ul></article></section>
-    <section class="import-pick-progress"><article class="file-picker-panel"><input id="image-file-input" type="file" accept="image/*" multiple hidden ${isOcrLocked() ? "disabled" : ""}/><button id="file-drop-zone" class="file-drop-zone" type="button" ${isOcrLocked() ? "disabled" : ""}><span class="drop-icon">＋</span><strong>点击选择图片或拖拽图片到这里</strong><small>支持选择、拖拽或 Ctrl+V 粘贴多张本地图片；文件只保留在本机。</small></button><p id="file-summary">已选文件：${importImages.length} 张　·　总大小：${formatBytes(totalSize)}　·　${hasClassifyingImportImages() ? "正在判断图片类型" : importImages.some((image) => !image.confirmed) ? "存在待确认分类" : importImages.length ? "分类均已确认" : "等待添加图片"}</p></article><article class="import-progress" id="import-progress-panel"><header><div><p class="section-kicker">导入任务进度</p><h2>${ocrStatusLabel()}</h2></div></header><dl><div><dt>任务状态</dt><dd>${ocrStatusLabel()}</dd></div><div><dt>当前阶段</dt><dd>${ocrUi.message || ocrStatusLabel()}</dd></div><div><dt>当前文件</dt><dd title="${html(currentFilename)}">${html(currentFilename)}</dd></div></dl><p>当前图片：${ocrUi.completed} / ${ocrUi.total || importImages.length} · 已完成：${ocrUi.completed} · 待处理：${Math.max(0, (ocrUi.total || importImages.length) - ocrUi.completed)} · 错误数：${ocrUi.error ? 1 : 0}</p><div class="progress-track"><span style="width:${progress}%"></span></div>${ocrUi.error ? `<small class="import-error">${html(ocrUi.error)}</small>` : `<small>${html(ocrUi.message || "图片尚未离开本机。")}</small>`}</article></section>
+    <section class="import-pick-progress"><article class="file-picker-panel"><input id="image-file-input" type="file" accept="image/*" multiple hidden ${isOcrLocked() || !!importDraftController.persistenceFailure ? "disabled" : ""}/><button id="file-drop-zone" class="file-drop-zone" type="button" ${isOcrLocked() || !!importDraftController.persistenceFailure ? "disabled" : ""}><span class="drop-icon">＋</span><strong>点击选择图片或拖拽图片到这里</strong><small>支持选择、拖拽或 Ctrl+V 粘贴多张本地图片；文件只保留在本机。</small></button><p id="file-summary">已选文件：${importImages.length} 张　·　总大小：${formatBytes(totalSize)}　·　${hasClassifyingImportImages() ? "正在判断图片类型" : importImages.some((image) => !image.confirmed) ? "存在待确认分类" : importImages.length ? "分类均已确认" : "等待添加图片"}</p></article><article class="import-progress" id="import-progress-panel"><header><div><p class="section-kicker">导入任务进度</p><h2>${ocrStatusLabel()}</h2></div></header><dl><div><dt>任务状态</dt><dd>${ocrStatusLabel()}</dd></div><div><dt>当前阶段</dt><dd>${ocrUi.message || ocrStatusLabel()}</dd></div><div><dt>当前文件</dt><dd title="${html(currentFilename)}">${html(currentFilename)}</dd></div></dl><p>当前图片：${ocrUi.completed} / ${ocrUi.total || importImages.length} · 已完成：${ocrUi.completed} · 待处理：${Math.max(0, (ocrUi.total || importImages.length) - ocrUi.completed)} · 错误数：${ocrUi.error ? 1 : 0}</p><div class="progress-track"><span style="width:${progress}%"></span></div>${importDraftController.persistenceFailure ? importDraftPersistenceTemplate() : ocrUi.error ? `<small class="import-error">${html(ocrUi.error)}</small>` : `<small>${html(ocrUi.message || "图片尚未离开本机。")}</small>`}</article></section>
     <section class="import-pools" aria-label="图片分类池">${importPoolTemplate("主星")}${importPoolTemplate("辅星")}${importPoolTemplate("经验星曜")}</section>
     <section class="overlap-grid" aria-label="主星与辅星重复行标记">${overlapTemplate("主星")}${overlapTemplate("辅星")}</section>
     <footer class="import-footer"><div><button class="button button-secondary positive-action" data-confirm-all-pools type="button" ${isOcrLocked() || hasClassifyingImportImages() || !importImages.length ? "disabled" : ""}>一键确认全部分类</button><button class="button button-tertiary danger-action" data-clear-import-images type="button" ${isOcrLocked() || !importImages.length ? "disabled" : ""}>清空待识别图片</button></div><div><button class="button button-secondary" data-open-restore type="button" ${isOcrLocked() ? "disabled" : ""}>恢复快照</button><button class="button button-secondary start-recognition-action" data-start-ocr type="button" ${isOcrRunning() && !canCancelOcr() ? "disabled" : ""}>${startLabel}</button></div></footer>
@@ -839,11 +839,51 @@ function clearAccountScopedTransientState(): void {
   ocrUi = { status: "idle", completed: 0, total: 0, sourceImageId: null, message: "", error: "" };
 }
 
-function reportImportDraftError(error: unknown, action = "保存"): void {
-  const message = error instanceof Error ? error.message : `待识别图片${action}失败。`;
-  importNotice(`待识别图片${action}失败：${message}`, true);
-  showToast(message);
+function importDraftSaveMessage(): string {
+  const name = importDraftController.persistenceFailure?.name;
+  if (name === "QuotaExceededError") return "本机存储空间不足，图片更改尚未保存。请释放空间后重试。";
+  return "图片更改尚未保存到本机，请保留当前页面并重试保存。";
+}
+
+function importDraftPersistenceTemplate(): string {
+  if (!importDraftController.persistenceFailure) return "";
+  return `<div><p class="import-error" role="alert">${html(importDraftSaveMessage())}</p><button class="button button-secondary" data-retry-import-draft type="button" ${isOcrLocked() || importDraftTransitioning ? "disabled" : ""}>重试保存图片</button></div>`;
+}
+
+function reportImportDraftError(_error: unknown, _action = "保存"): void {
+  importNotice(importDraftSaveMessage(), true);
   renderPage();
+}
+
+async function ensureImportDraftSaved(): Promise<boolean> {
+  const accountId = workspaceContext?.account.accountId;
+  const generation = importDraftController.generation;
+  try {
+    await importDraftController.flush();
+    return !!accountId && importDraftController.isCurrent(accountId, generation) && workspaceContext?.account.accountId === accountId && !importDraftTransitioning;
+  } catch (error) { reportImportDraftError(error); return false; }
+}
+
+async function retryImportDraftSave(): Promise<void> {
+  if (isOcrLocked() || importDraftTransitioning || !workspaceContext || importDraftReadyAccountId !== workspaceContext.account.accountId) return;
+  const accountId = workspaceContext.account.accountId;
+  // Cancel any classifier still awaiting a result from the failed draft.
+  const generation = ++importDraftGeneration;
+  const persistenceGeneration = importDraftController.generation;
+  importDraftTransitioning = true;
+  renderPage();
+  try {
+    // Original Files remain owned by the page; all images are committed atomically.
+    await importDraftController.save(importImages, overlapRelations, importImages);
+    if (generation !== importDraftGeneration || !importDraftController.isCurrent(accountId, persistenceGeneration)) return;
+    importDraftTransitioning = false;
+    importNotice("图片已保存到本机。");
+    void classifyAddedImages(importImages.filter((image) => image.classificationStatus === "classifying"));
+  } catch (error) {
+    if (generation === importDraftGeneration && importDraftController.isCurrent(accountId, persistenceGeneration)) reportImportDraftError(error);
+  } finally {
+    if (generation === importDraftGeneration) { importDraftTransitioning = false; renderPage(); }
+  }
 }
 
 function trackImportDraftWrite(write: Promise<void>): void {
@@ -1623,7 +1663,12 @@ async function classifyAddedImages(additions: ImportImage[]): Promise<void> {
       failed = true;
       importImages = applyProductImportClassificationFailure(importImages, addition.sourceImageId);
     }
-    trackImportDraftWrite(importDraftController.saveMetadata(importImages, overlapRelations));
+    try { await importDraftController.saveMetadata(importImages, overlapRelations); }
+    catch (error) {
+      if (generation === importDraftGeneration && accountId && workspaceContext?.account.accountId === accountId && importDraftController.isCurrent(accountId, persistenceGeneration)) reportImportDraftError(error);
+      return;
+    }
+    if (generation !== importDraftGeneration || !accountId || workspaceContext?.account.accountId !== accountId || !importDraftController.isCurrent(accountId, persistenceGeneration)) return;
     if (activeTab === "import") renderPage();
   }
   if (generation !== importDraftGeneration) return;
@@ -1632,19 +1677,28 @@ async function classifyAddedImages(additions: ImportImage[]): Promise<void> {
   if (activeTab === "import") renderPage();
 }
 
-function addImportFiles(files: Iterable<File>): void {
+async function addImportFiles(files: Iterable<File>): Promise<void> {
   if (isOcrLocked() || importDraftTransitioning || !workspaceContext || importDraftReadyAccountId !== workspaceContext.account.accountId) { importNotice("请等待当前工作区与待识别图片加载完成。", true); renderPage(); return; }
+  if (importDraftController.persistenceFailure) { reportImportDraftError(importDraftController.persistenceFailure); return; }
+  const accountId = workspaceContext.account.accountId;
+  const generation = importDraftGeneration;
+  const persistenceGeneration = importDraftController.generation;
   try {
     const additions = importDraftController.createImages(files);
     if (!additions.length) return;
     importImages = [...importImages, ...additions];
-    trackImportDraftWrite(importDraftController.save(importImages, overlapRelations, additions));
-    ocrUi = { status: "idle", completed: 0, total: importImages.length, sourceImageId: null, message: "正在判断图片类型，请稍候。", error: "" };
+    ocrUi = { status: "idle", completed: 0, total: importImages.length, sourceImageId: null, message: "正在保存图片到本机，请稍候。", error: "" };
+    importDraftTransitioning = true;
     renderPage();
+    await importDraftController.save(importImages, overlapRelations, additions);
+    if (generation !== importDraftGeneration || !importDraftController.isCurrent(accountId, persistenceGeneration)) return;
+    importDraftTransitioning = false;
+    ocrUi.message = "正在判断图片类型，请稍候。";
     void classifyAddedImages(additions);
   } catch (error) {
-    importNotice(error instanceof Error ? error.message : "图片添加失败。", true);
-    renderPage();
+    if (generation === importDraftGeneration && importDraftController.isCurrent(accountId, persistenceGeneration)) reportImportDraftError(error);
+  } finally {
+    if (generation === importDraftGeneration) { importDraftTransitioning = false; renderPage(); }
   }
 }
 
@@ -1675,6 +1729,7 @@ function createOcrJobId(): string { return `product-ocr-${globalThis.crypto?.ran
 async function requestStartOcr(): Promise<void> {
   if (importDraftTransitioning || !workspaceContext || importDraftReadyAccountId !== workspaceContext.account.accountId) { importNotice("请等待当前工作区与待识别图片加载完成。", true); renderPage(); return; }
   if (canCancelOcr()) { ocrUi.status = "cancelling"; ocrUi.message = "正在取消本次识别。"; ocrCoordinator.cancel(); renderPage(); return; }
+  if (!(await ensureImportDraftSaved())) return;
   if (pendingOcrReview) { clearPendingReviewUi(); pendingOcrReview = null; }
   ocrUi.status = "validating"; ocrUi.error = ""; renderPage();
   try {
@@ -1812,6 +1867,7 @@ async function commitOcrDraft(draft: ReconcileDraftV1, resolution: ReconcileReso
 
 async function beginOcrRun(): Promise<void> {
   ocrConfirmOpen = false;
+  if (!(await ensureImportDraftSaved())) return;
   const current = workspaceContext;
   if (!current) { ocrUi.status = "failed"; importNotice("当前工作区尚未加载。", true); renderPage(); return; }
   const runContext: ProductOcrRunContextV1 = {
@@ -2047,6 +2103,7 @@ function bindImportControls(): void {
     const id = button.dataset.previewImage;
     if (id) setPreviewImage(id);
   }));
+  root.querySelector<HTMLButtonElement>("[data-retry-import-draft]")?.addEventListener("click", () => { void retryImportDraftSave(); });
   root.querySelectorAll<HTMLButtonElement>("[data-confirm-pool]").forEach((button) => button.addEventListener("click", () => {
     const pool = importPoolFrom(button.dataset.confirmPool);
     if (!pool || isOcrLocked() || importDraftTransitioning) return;

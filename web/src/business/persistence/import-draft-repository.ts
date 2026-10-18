@@ -48,11 +48,17 @@ function requestResult<T>(request: IDBRequest<T>): Promise<T> {
 }
 
 function transactionComplete(transaction: IDBTransaction): Promise<void> {
-  return new Promise((resolve, reject) => {
+  let requestError: DOMException | null = null;
+  const done = new Promise<void>((resolve, reject) => {
     transaction.oncomplete = () => resolve();
-    transaction.onabort = () => reject(transaction.error ?? new Error("Import Draft transaction 已中止"));
-    transaction.onerror = () => reject(transaction.error ?? new Error("Import Draft transaction 失败"));
+    // At the bubbling request error event, transaction.error can still be null.
+    // Capture that original error and wait for abort/complete before settling.
+    transaction.onerror = (event) => { requestError ??= (event.target as IDBRequest | null)?.error ?? transaction.error; };
+    transaction.onabort = () => reject(requestError ?? transaction.error ?? new DOMException("Import Draft transaction aborted", "AbortError"));
   });
+  // A request can reject before its caller reaches `await done`.
+  void done.catch(() => undefined);
+  return done;
 }
 
 function metadataOnly(input: ImportDraftMetadataInput): ImportDraftRecord {

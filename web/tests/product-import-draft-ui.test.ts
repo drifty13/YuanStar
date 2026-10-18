@@ -1,3 +1,4 @@
+import { createProductImportImages, confirmProductImportPool } from "../src/product-ocr-import.js";
 import "./helpers/idb-key-range.js";
 import { getImportDraft, saveImportDraft, type ImportDraftImageRecord, type SaveImportDraftInput } from "../src/business/persistence/import-draft-repository.js";
 import { ProductImportDraftController, restoreProductImportDraft } from "../src/product-import-draft.js";
@@ -27,6 +28,9 @@ class FakeDatabase {
   keyPaths = new Map<string, string | string[] | null>();
   version = 1;
   blobWrites = 0;
+  failBlobError: unknown = null;
+  requestBlobError: DOMException | null = null;
+  abortAtCommit: DOMException | null = null;
   failBlobId: string | null = null;
   failDraftWrite = false;
   failClear = false;
@@ -39,7 +43,7 @@ class FakeDatabase {
 class FakeTransaction {
   oncomplete: (() => void) | null = null;
   onabort: (() => void) | null = null;
-  onerror: (() => void) | null = null;
+  onerror: ((event: { target: { error: Error | null } }) => void) | null = null;
   error: Error | null = null;
   readonly working: Map<string, Store>;
   private pending = 0;
@@ -54,7 +58,7 @@ class FakeTransaction {
     queueMicrotask(() => {
       if (this.settled) return;
       try { request.result = read(); request.onsuccess?.(); }
-      catch (error) { request.error = error instanceof Error ? error : new Error(String(error)); this.error = request.error; request.onerror?.(); this.abort(); return; }
+      catch (error) { request.error = error instanceof Error ? error : new Error(String(error)); this.onerror?.({ target: request }); this.error = request.error; request.onerror?.(); this.abort(); return; }
       this.pending--;
       this.finishLater();
     });
@@ -63,6 +67,8 @@ class FakeTransaction {
   put(name: string, value: unknown): void {
     if (this.settled) throw new Error("transaction closed");
     const record = value as Record<string, unknown>;
+    if (name === "importDraftImages" && this.db.failBlobError) throw this.db.failBlobError;
+    if (name === "importDraftImages" && this.db.requestBlobError) { this.request(() => { throw this.db.requestBlobError; }); return; }
     if (name === "importDraftImages") {
       if (record.sourceImageId === this.db.failBlobId) throw new Error("injected Blob write failure");
       this.db.blobWrites++;
@@ -87,6 +93,7 @@ class FakeTransaction {
     setTimeout(() => {
       this.scheduled = false;
       if (this.settled || this.pending) return;
+      if (this.db.abortAtCommit) { this.error = this.db.abortAtCommit; this.abort(); return; }
       this.settled = true;
       this.db.stores = new Map([...this.working].map(([name, records]) => [name, new Map(records)]));
       this.oncomplete?.();
@@ -444,3 +451,83 @@ for (const failCleanup of [false, true]) {
   expect(!(await getImportDraft(idb, "A")), "eventual cleanup succeeds without a second OCR commit");
   console.log(`PASS real repository P5 commit, persisted review and refresh; cleanup failure=${failCleanup}`);
 }
+
+// Three-image regression: a failed Blob transaction must remain the actionable error.
+{
+  const localDb = new FakeDatabase();
+  localDb.stores.set("importDrafts", new Map());
+  localDb.stores.set("importDraftImages", new Map());
+  const draft = new ProductImportDraftController({ openDatabase: async () => localDb as unknown as IDBDatabase, urls });
+  await draft.activate("failure-A");
+  const pending = createProductImportImages([1, 2, 3].map((id) => new File([`image-${id}`], `${id}.png`, { type: "image/png", lastModified: 10 })), urls);
+  const original = new DOMException("injected original Blob clone failure", "DataCloneError");
+  localDb.failBlobError = original;
+  const firstWrite = draft.save(pending, [], pending);
+  // Mirrors automatic recommendations followed by a user's pool confirmation.
+  const suggested = pending.map((item) => ({ ...item, pool: "辅星" as const, suggestedPool: "辅星" as const, classificationStatus: "suggested" as const }));
+  const confirmation = confirmProductImportPool(suggested, "辅星");
+  const outcomes = await Promise.allSettled([firstWrite, draft.saveMetadata(suggested, []), draft.saveMetadata(confirmation, [])]);
+  expect(outcomes.every((item) => item.status === "rejected" && item.reason === original), "metadata and confirmation must preserve the original Blob error, not missing metadata");
+  expect(!(await getImportDraft(localDb as unknown as IDBDatabase, "failure-A")), "failed initial three-image save leaves no partial draft");
+  localDb.failBlobError = null;
+  await draft.save(confirmation, [], confirmation);
+  await draft.flush();
+  const recovered = await getImportDraft(localDb as unknown as IDBDatabase, "failure-A");
+  expect(recovered?.imageBlobs.length === 3 && recovered.draft.images.every((item) => item.confirmed), "retry from original Files preserves confirmations and all three Blobs");
+  const extra = createProductImportImages([new File(["append"], "append.png", { type: "image/png", lastModified: 11 })], urls);
+  localDb.failBlobError = original;
+  const failedAppend = await Promise.allSettled([draft.save([...confirmation, ...extra], [], extra)]);
+  expect(failedAppend[0]?.status === "rejected" && (await getImportDraft(localDb as unknown as IDBDatabase, "failure-A"))?.imageBlobs.length === 3, "failed append keeps the original durable draft intact");
+  localDb.failBlobError = null;
+  const retainedAfterAppendFailure = await getImportDraft(localDb as unknown as IDBDatabase, "failure-A");
+  expect(JSON.stringify(retainedAfterAppendFailure?.draft) === JSON.stringify(recovered?.draft), "failed append retains the entire old metadata snapshot");
+  expect((await Promise.all(retainedAfterAppendFailure!.imageBlobs.map((item) => item.blob.text()))).join("|") === "image-1|image-2|image-3", "failed append retains all original image bytes");
+  await draft.save([...confirmation, ...extra], [], extra);
+  const retriedAppend = await getImportDraft(localDb as unknown as IDBDatabase, "failure-A");
+  expect(retriedAppend?.imageBlobs.length === 4 && retriedAppend.draft.images.slice(0, 3).every((item) => item.confirmed), "append-only retry recovers from retained Files without losing prior confirmations");
+  const staleMetadata = draft.saveMetadata(confirmation, []);
+  const clearing = draft.clear();
+  await Promise.all([staleMetadata, clearing]);
+  await draft.activate("failure-B");
+  expect(!(await getImportDraft(localDb as unknown as IDBDatabase, "failure-B")), "clear after failure allows isolated account activation");
+  console.log("PASS three-image Blob failure, original error, manual confirmation, File retry, append rollback and account recovery");
+}
+
+// Browser-style request errors bubble before transaction.error is available.
+for (const failure of ["request", "commit"] as const) {
+  const localDb = new FakeDatabase();
+  localDb.stores.set("importDrafts", new Map());
+  localDb.stores.set("importDraftImages", new Map());
+  const draft = new ProductImportDraftController({ openDatabase: async () => localDb as unknown as IDBDatabase, urls });
+  await draft.activate("async-failure");
+  const pending = createProductImportImages([1, 2, 3].map((id) => new File(["bytes"], `async-${id}.png`, { type: "image/png", lastModified: 10 })), urls);
+  const original = new DOMException(`injected ${failure}`, failure === "request" ? "QuotaExceededError" : "AbortError");
+  if (failure === "request") localDb.requestBlobError = original;
+  else localDb.abortAtCommit = original;
+  const results = await Promise.allSettled([draft.save(pending, [], pending), draft.saveMetadata(pending, [])]);
+  expect(results.every((result) => result.status === "rejected" && result.reason === original), "request/abort error identity must survive metadata follow-up");
+  expect(draft.persistenceFailure?.phase === "save" && draft.persistenceFailure.name === original.name && draft.persistenceFailure.message === original.message && draft.persistenceFailure.code === original.code, "diagnostic preserves phase, name, message and code");
+  localDb.requestBlobError = null; localDb.abortAtCommit = null;
+  expect(!(await getImportDraft(localDb as unknown as IDBDatabase, "async-failure")), "aborted transaction commits neither metadata nor Blobs");
+  await draft.save(pending, [], pending);
+  await draft.flush();
+  expect(!draft.persistenceFailure && (await getImportDraft(localDb as unknown as IDBDatabase, "async-failure"))?.imageBlobs.length === 3, "explicit File retry recovers request and commit failures");
+}
+console.log("PASS asynchronous Blob request errors, quota diagnostics, transaction abort and retry");
+
+// Rejected opens must not remain cached forever; activation may be retried safely.
+{
+  const localDb = new FakeDatabase();
+  localDb.stores.set("importDrafts", new Map());
+  localDb.stores.set("importDraftImages", new Map());
+  let opens = 0;
+  const draft = new ProductImportDraftController({ openDatabase: async () => {
+    if (++opens === 1) throw new DOMException("injected opening failure", "UnknownError");
+    return localDb as unknown as IDBDatabase;
+  }, urls });
+  const failedOpen = await Promise.allSettled([draft.activate("open-retry")]);
+  expect(failedOpen[0]?.status === "rejected", "initial database open can fail");
+  await draft.activate("open-retry");
+  expect(Number(opens) === 2, "activation retries a rejected database open promise");
+}
+console.log("PASS database open retry without clearing browser data");
